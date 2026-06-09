@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
-import "./globals.css";
+import "./styles/index.css";
 
 export const metadata: Metadata = {
-  title: "Student Dashboard",
-  description: "Volunteer English tutoring student dashboard"
+  title: "TutorFlow",
+  description: "Student dashboard for one-on-one tutoring"
 };
 
 export default function RootLayout({
