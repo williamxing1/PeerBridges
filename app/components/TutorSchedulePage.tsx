@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { CalendarDays, Clock, User, X } from "lucide-react";
+import { supabase } from "../../lib/supabase/client";
 
 type Day = "sat" | "sun";
 type Availability = Record<Day, number[]>;
@@ -12,6 +13,20 @@ type Booking = {
   date: string;
   time: string;
 };
+type TutorProfileAvailability = Record<string, boolean | null>;
+type ClassRow = {
+  lesson_id: string;
+  student_uid: string;
+  teacher_uid: string;
+  lesson_date: string;
+  start_time: string;
+  end_time: string;
+};
+type StoredUser = {
+  uid: string;
+};
+
+const storedUserKey = "tutorflow-user";
 
 const SLOT_TIMES = [
   "7:00 AM", "7:30 AM", "8:00 AM", "8:30 AM",
@@ -20,21 +35,10 @@ const SLOT_TIMES = [
 ];
 
 const ALL_SLOT_INDICES = SLOT_TIMES.map((_, index) => index);
-
-const INITIAL_BOOKINGS: Record<string, Booking> = {
-  "sat-2": {
-    student: "Sophie Chen",
-    note: "I'd like to review the homework questions from last week before starting the new lesson.",
-    date: "Saturday, June 13",
-    time: "8:00 AM – 8:30 AM",
-  },
-  "sun-4": {
-    student: "Leo Wang",
-    note: "Please focus on speaking practice and pronunciation.",
-    date: "Sunday, June 14",
-    time: "9:00 AM – 9:30 AM",
-  },
-};
+const SLOT_COLUMN_SUFFIXES = ["700", "730", "800", "830", "900", "930", "1000", "1030", "1100", "1130"];
+const AVAILABILITY_COLUMNS = (["sat", "sun"] as Day[]).flatMap((day) =>
+  SLOT_COLUMN_SUFFIXES.map((suffix) => `${day}_${suffix}`)
+);
 
 function getWeekendDates() {
   const today = new Date(2026, 5, 9);
@@ -51,8 +55,73 @@ function formatDate(d: Date) {
   return d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
 }
 
+function formatDbDate(d: Date) {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function formatTime(time: string) {
+  return new Date(`1970-01-01T${time}`).toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 function slotKey(day: Day, slotIdx: number) {
   return `${day}-${slotIdx}`;
+}
+
+function availabilityColumn(day: Day, slotIdx: number) {
+  return `${day}_${SLOT_COLUMN_SUFFIXES[slotIdx]}`;
+}
+
+function readStoredUser() {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const stored = sessionStorage.getItem(storedUserKey);
+    return stored ? (JSON.parse(stored) as StoredUser) : null;
+  } catch {
+    return null;
+  }
+}
+
+function profileToAvailability(profile: TutorProfileAvailability | null) {
+  if (!profile) {
+    return {
+      availability: { sat: ALL_SLOT_INDICES, sun: ALL_SLOT_INDICES },
+      unset: true,
+    };
+  }
+
+  const unset = AVAILABILITY_COLUMNS.every((column) => profile[column] === null);
+
+  return {
+    availability: {
+      sat: ALL_SLOT_INDICES.filter((idx) => profile[availabilityColumn("sat", idx)] !== false),
+      sun: ALL_SLOT_INDICES.filter((idx) => profile[availabilityColumn("sun", idx)] !== false),
+    },
+    unset,
+  };
+}
+
+function availabilityToUpdate(availability: Availability) {
+  return Object.fromEntries(
+    (["sat", "sun"] as Day[]).flatMap((day) =>
+      ALL_SLOT_INDICES.map((idx) => [
+        availabilityColumn(day, idx),
+        availability[day].includes(idx),
+      ])
+    )
+  );
+}
+
+function timeToSlotIndex(time: string) {
+  const [hours, minutes] = time.split(":").map(Number);
+  const totalMinutes = hours * 60 + minutes;
+  return (totalMinutes - 7 * 60) / 30;
 }
 
 function BookingPanel({
@@ -142,7 +211,7 @@ function CancelBookingDialog({
     <Dialog.Root open={booking !== null} onOpenChange={(open) => !open && onCancel()}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-card p-5 shadow-xl">
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-card p-5 shadow-xl">
           <div className="flex items-start justify-between gap-4">
             <div>
               <Dialog.Title className="text-card-foreground">
@@ -253,7 +322,11 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
     sat: ALL_SLOT_INDICES,
     sun: ALL_SLOT_INDICES,
   });
-  const [bookings, setBookings] = useState<Record<string, Booking>>(INITIAL_BOOKINGS);
+  const [bookings, setBookings] = useState<Record<string, Booking>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [availabilityUnset, setAvailabilityUnset] = useState(false);
   const [saved, setSaved] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [selectedBookingKey, setSelectedBookingKey] = useState<string | null>(null);
@@ -261,6 +334,122 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
 
   const selectedBooking = selectedBookingKey ? bookings[selectedBookingKey] : null;
   const hasAvailability = availability.sat.length + availability.sun.length > 0;
+
+  async function getTutorUid() {
+    const { data } = await supabase.auth.getUser();
+    return data.user?.id ?? readStoredUser()?.uid;
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSchedule() {
+      setLoading(true);
+      setError("");
+
+      const tutorUid = await getTutorUid();
+      if (!tutorUid) {
+        if (!cancelled) {
+          setError("No tutor uid available.");
+          setLoading(false);
+        }
+        return;
+      }
+
+      const availabilitySelect = AVAILABILITY_COLUMNS.join(", ");
+      const { data: profile, error: profileError } = await supabase
+        .from("tutor_profiles")
+        .select(availabilitySelect)
+        .eq("uid", tutorUid)
+        .single();
+
+      if (profileError) {
+        if (!cancelled) {
+          setError(profileError.message);
+          setLoading(false);
+        }
+        return;
+      }
+
+      const { availability: nextAvailability, unset } = profileToAvailability(profile as unknown as TutorProfileAvailability);
+
+      const satDate = formatDbDate(weekendDates.sat);
+      const sunDate = formatDbDate(weekendDates.sun);
+      const { data: classRows, error: classesError } = await supabase
+        .from("classes")
+        .select("lesson_id, student_uid, teacher_uid, lesson_date, start_time, end_time")
+        .eq("teacher_uid", tutorUid)
+        .in("lesson_date", [satDate, sunDate])
+        .order("lesson_date", { ascending: true })
+        .order("start_time", { ascending: true });
+
+      if (classesError) {
+        if (!cancelled) {
+          setError(classesError.message);
+          setLoading(false);
+        }
+        return;
+      }
+
+      const classes = (classRows ?? []) as ClassRow[];
+      const studentUids = Array.from(new Set(classes.map((cls) => cls.student_uid)));
+      const studentNames = new Map<string, string>();
+
+      if (studentUids.length > 0) {
+        const { data: profiles, error: studentsError } = await supabase
+          .from("profiles")
+          .select("uid, name")
+          .in("uid", studentUids);
+
+        if (studentsError) {
+          if (!cancelled) {
+            setError(studentsError.message);
+            setLoading(false);
+          }
+          return;
+        }
+
+        profiles?.forEach((student) => {
+          studentNames.set(student.uid, student.name);
+        });
+      }
+
+      const nextBookings: Record<string, Booking> = {};
+      classes.forEach((cls) => {
+        const day: Day = cls.lesson_date === satDate ? "sat" : "sun";
+        const startIdx = timeToSlotIndex(cls.start_time);
+        const endIdx = timeToSlotIndex(cls.end_time);
+        const student = studentNames.get(cls.student_uid) ?? cls.student_uid;
+        const booking: Booking = {
+          student,
+          note: "",
+          date: formatDate(day === "sat" ? weekendDates.sat : weekendDates.sun),
+          time: `${formatTime(cls.start_time)} - ${formatTime(cls.end_time)}`,
+        };
+
+        for (let idx = startIdx; idx < endIdx; idx += 1) {
+          if (Number.isInteger(idx) && idx >= 0 && idx < SLOT_TIMES.length) {
+            nextBookings[slotKey(day, idx)] = booking;
+          }
+        }
+      });
+
+      if (!cancelled) {
+        setAvailability(nextAvailability);
+        setAvailabilityUnset(unset);
+        setBookings(nextBookings);
+        setSaved(!unset);
+        setDirty(false);
+        setLoading(false);
+      }
+    }
+
+    loadSchedule();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   function toggleSlot(day: Day, slotIdx: number) {
     const key = slotKey(day, slotIdx);
@@ -301,10 +490,38 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
     setPendingCancel(null);
   }
 
+  async function saveAvailability() {
+    setSaving(true);
+    setError("");
+
+    const tutorUid = await getTutorUid();
+    if (!tutorUid) {
+      setError("No tutor uid available.");
+      setSaving(false);
+      return;
+    }
+
+    const { error: updateError } = await supabase
+      .from("tutor_profiles")
+      .update(availabilityToUpdate(availability))
+      .eq("uid", tutorUid);
+
+    if (updateError) {
+      setError(updateError.message);
+      setSaving(false);
+      return;
+    }
+
+    setAvailabilityUnset(false);
+    setSaved(true);
+    setDirty(false);
+    setSaving(false);
+  }
+
   return (
     <>
-      <div className="flex gap-5 h-full min-h-0 overflow-hidden">
-        <div className="flex-1 flex flex-col gap-5 min-w-0 overflow-y-auto pr-1">
+      <div className="flex h-full min-h-0 flex-col gap-5 overflow-y-auto lg:flex-row lg:overflow-hidden">
+        <div className="flex min-w-0 flex-1 flex-col gap-5 lg:overflow-y-auto lg:pr-1">
           <div>
             <h2 className="text-foreground">{lang === "zh" ? "设置可用时间" : "Set Availability"}</h2>
             <p className="text-sm text-muted-foreground mt-0.5">
@@ -314,7 +531,29 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
             </p>
           </div>
 
-          {!saved && !hasAvailability && (
+          {error && (
+            <div className="rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              {error}
+            </div>
+          )}
+
+          {loading && (
+            <div className="bg-card border border-border rounded-2xl p-5 text-sm text-muted-foreground">
+              {lang === "zh" ? "正在加载课程表..." : "Loading your schedule..."}
+            </div>
+          )}
+
+          {availabilityUnset && !loading && (
+            <div className="bg-card border border-border rounded-2xl p-5 flex items-center justify-between gap-4">
+              <div>
+                <p className="text-card-foreground text-sm">You haven't filled out your availability yet.</p>
+                <p className="text-sm text-muted-foreground mt-0.5">All slots are shown as available by default. Click slots to mark them unavailable, then save.</p>
+              </div>
+              <CalendarDays size={28} className="text-primary shrink-0" />
+            </div>
+          )}
+
+          {!saved && !availabilityUnset && !hasAvailability && (
             <div className="bg-card border border-border rounded-2xl p-5 flex items-center justify-between gap-4">
               <div>
                 <p className="text-card-foreground text-sm">You haven't selected your availability for this week.</p>
@@ -340,18 +579,15 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
               </span>
             </div>
             <button
-              onClick={() => {
-                setSaved(true);
-                setDirty(false);
-              }}
-              disabled={!hasAvailability}
+              onClick={saveAvailability}
+              disabled={!hasAvailability || saving || loading}
               className="rounded-xl bg-primary px-5 py-2.5 text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {saved && !dirty ? "Availability saved" : "Save availability"}
+              {saving ? "Saving..." : saved && !dirty ? "Availability saved" : "Save availability"}
             </button>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <DayColumn
               day="sat"
               date={weekendDates.sat}
@@ -371,7 +607,7 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
 
         <div
           className={`shrink-0 bg-card border border-border rounded-2xl overflow-hidden transition-all duration-300 ${
-            selectedBooking ? "w-80 opacity-100" : "w-0 opacity-0 border-transparent"
+            selectedBooking ? "min-h-[24rem] w-full opacity-100 lg:min-h-0 lg:w-80" : "h-0 w-full opacity-0 border-transparent lg:h-auto lg:w-0"
           }`}
         >
           {selectedBooking && (

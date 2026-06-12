@@ -1,69 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import * as Select from "@radix-ui/react-select";
 import { ChevronDown, ChevronRight, X, CalendarDays, Clock, User, CheckCircle2 } from "lucide-react";
+import { supabase } from "../../lib/supabase/client";
 
 // ─── DATA ─────────────────────────────────────────────────────────────────────
-
-const TUTORS = [
-  {
-    id: 1,
-    name: "Dr. Sarah Mitchell",
-    subject: "AP Calculus",
-    avatar: "https://images.unsplash.com/photo-1590650213165-c1fef80648c4?w=60&h=60&fit=crop&auto=format",
-    subjectColor: "bg-violet-100 text-violet-700",
-    // slot indices 0–9 = 7:00, 7:30, 8:00, 8:30, 9:00, 9:30, 10:00, 10:30, 11:00, 11:30
-    availability: {
-      sat: [0, 1, 2, 4, 5, 8, 9],
-      sun: [2, 3, 4, 6, 7, 8],
-    },
-  },
-  {
-    id: 2,
-    name: "Ms. Karen Liu",
-    subject: "English Literature",
-    avatar: "https://images.unsplash.com/photo-1573496799652-408c2ac9fe98?w=60&h=60&fit=crop&auto=format",
-    subjectColor: "bg-emerald-100 text-emerald-700",
-    availability: {
-      sat: [2, 3, 6, 7, 8, 9],
-      sun: [0, 1, 4, 5, 6, 9],
-    },
-  },
-  {
-    id: 3,
-    name: "Mr. David Park",
-    subject: "SAT / ACT Test Prep",
-    avatar: "https://images.unsplash.com/photo-1574281570877-bd815ebb50a4?w=60&h=60&fit=crop&auto=format",
-    subjectColor: "bg-orange-100 text-orange-700",
-    availability: {
-      sat: [0, 1, 2, 3, 7, 8],
-      sun: [3, 4, 5, 6, 7],
-    },
-  },
-  {
-    id: 4,
-    name: "Prof. James Okafor",
-    subject: "Chemistry & Physics",
-    avatar: "https://images.unsplash.com/photo-1758685734503-58a8accc24e8?w=60&h=60&fit=crop&auto=format",
-    subjectColor: "bg-sky-100 text-sky-700",
-    availability: {
-      sat: [4, 5, 6, 7, 8, 9],
-      sun: [0, 1, 2, 5, 6, 8, 9],
-    },
-  },
-  {
-    id: 5,
-    name: "Ms. Rachel Nguyen",
-    subject: "History & Social Studies",
-    avatar: "https://images.unsplash.com/photo-1573496800808-56566a492b63?w=60&h=60&fit=crop&auto=format",
-    subjectColor: "bg-rose-100 text-rose-700",
-    availability: {
-      sat: [1, 2, 3, 4, 8, 9],
-      sun: [2, 3, 6, 7, 8, 9],
-    },
-  },
-];
 
 // Next Saturday and Sunday
 function getWeekendDates() {
@@ -89,14 +31,114 @@ const SLOT_ENDS = [
   "11:30 AM", "12:00 PM",
 ];
 
+const SLOT_COLUMN_SUFFIXES = ["700", "730", "800", "830", "900", "930", "1000", "1030", "1100", "1130"];
+const AVAILABILITY_COLUMNS = (["sat", "sun"] as Day[]).flatMap((day) =>
+  SLOT_COLUMN_SUFFIXES.map((suffix) => `${day}_${suffix}`)
+);
+const storedUserKey = "tutorflow-user";
+
 function formatDate(d: Date) {
   return d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+}
+
+function formatDbDate(d: Date) {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function dbTime(slotIdx: number, ends = false) {
+  const time = ends ? SLOT_ENDS[slotIdx] : SLOT_TIMES[slotIdx];
+  const [hourPart, minutePart, period] = time.match(/(\d+):(\d+) (AM|PM)/)?.slice(1) ?? [];
+  let hours = Number(hourPart);
+  const minutes = Number(minutePart);
+
+  if (period === "PM" && hours !== 12) hours += 12;
+  if (period === "AM" && hours === 12) hours = 0;
+
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:00`;
+}
+
+function availabilityColumn(day: Day, slotIdx: number) {
+  return `${day}_${SLOT_COLUMN_SUFFIXES[slotIdx]}`;
+}
+
+function readStoredUser() {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const stored = sessionStorage.getItem(storedUserKey);
+    return stored ? (JSON.parse(stored) as StoredUser) : null;
+  } catch {
+    return null;
+  }
+}
+
+function gradeBand(grade: string) {
+  const gradeNumber = Number(grade.match(/\d+/)?.[0] ?? 0);
+  if (gradeNumber >= 1 && gradeNumber <= 6) return "elementary school";
+  if (gradeNumber >= 7 && gradeNumber <= 9) return "middle school";
+  if (gradeNumber >= 10 && gradeNumber <= 12) return "high school";
+  return "";
+}
+
+function matchesGradeBand(gradesToTutor: string, band: string) {
+  return gradesToTutor.toLowerCase() === band;
+}
+
+function profileAvailability(profile: TutorProfileRow): Availability {
+  return {
+    sat: SLOT_TIMES.map((_, idx) => idx).filter((idx) => profile[availabilityColumn("sat", idx)] !== false),
+    sun: SLOT_TIMES.map((_, idx) => idx).filter((idx) => profile[availabilityColumn("sun", idx)] !== false),
+  };
+}
+
+function BlankAvatar({ size = 40 }: { size?: number }) {
+  return (
+    <span
+      className="flex shrink-0 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground"
+      style={{ width: size, height: size }}
+      aria-hidden="true"
+    >
+      <User size={Math.max(14, Math.round(size * 0.45))} />
+    </span>
+  );
 }
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
 type Day = "sat" | "sun";
 interface Selection { day: Day; slots: number[] }
+type Availability = Record<Day, number[]>;
+type StoredUser = { uid: string };
+type TutorProfileRow = {
+  uid: string;
+  grades_to_tutor: string;
+} & Record<string, boolean | null | string>;
+type ProfileRow = {
+  uid: string;
+  name: string;
+};
+type ClassRow = {
+  lesson_id: string;
+  student_uid: string;
+  teacher_uid: string;
+  lesson_date: string;
+  start_time: string;
+  end_time: string;
+};
+type TutorOption = {
+  id: string;
+  name: string;
+  gradesToTutor: string;
+  availability: Availability;
+};
+type PastTeacher = {
+  uid: string;
+  name: string;
+  count: number;
+};
 
 // ─── SLOT BUTTON ──────────────────────────────────────────────────────────────
 
@@ -198,16 +240,19 @@ function BookingPanel({
   tutor,
   weekendDates,
   onClose,
+  onConfirm,
   lang,
 }: {
   selection: Selection;
-  tutor: typeof TUTORS[0];
+  tutor: TutorOption;
   weekendDates: { sat: Date; sun: Date };
   onClose: () => void;
+  onConfirm: () => Promise<boolean>;
   lang: string;
 }) {
   const [note, setNote] = useState("");
   const [confirmed, setConfirmed] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const date = weekendDates[selection.day];
   const startSlot = selection.slots[0];
@@ -229,7 +274,7 @@ function BookingPanel({
           <p className="text-sm text-muted-foreground">
             {lang === "zh"
               ? `您的课程已安排于 ${dateLabel}，${timeRange}。`
-              : `Your session with ${tutor.name} is confirmed for ${dateLabel} at ${timeRange}.`}
+              : `Your class is booked for ${dateLabel} at ${timeRange}.`}
           </p>
         </div>
         <button
@@ -261,16 +306,9 @@ function BookingPanel({
       <div className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-5">
         {/* Tutor */}
         <div className="flex items-center gap-3 p-3.5 bg-muted rounded-xl">
-          <img
-            src={tutor.avatar}
-            alt={tutor.name}
-            className="w-10 h-10 rounded-full object-cover shrink-0"
-          />
+          <BlankAvatar size={40} />
           <div>
             <p className="text-sm text-card-foreground">{tutor.name}</p>
-            <span className={`text-xs px-2 py-0.5 rounded-full ${tutor.subjectColor}`}>
-              {tutor.subject}
-            </span>
           </div>
         </div>
 
@@ -320,10 +358,18 @@ function BookingPanel({
       {/* Footer */}
       <div className="px-5 py-4 border-t border-border shrink-0">
         <button
-          onClick={() => setConfirmed(true)}
+          onClick={async () => {
+            setSaving(true);
+            const success = await onConfirm();
+            setSaving(false);
+            if (success) {
+              setConfirmed(true);
+            }
+          }}
+          disabled={saving}
           className="w-full bg-primary text-primary-foreground rounded-xl py-3 text-sm hover:bg-primary/90 transition-colors cursor-pointer shadow-sm"
         >
-          {lang === "zh" ? "确认预约" : "Confirm Booking"}
+          {saving ? "Booking..." : lang === "zh" ? "确认预约" : "Confirm Booking"}
         </button>
         <p className="text-center text-xs text-muted-foreground mt-2.5">
           {lang === "zh"
@@ -337,13 +383,152 @@ function BookingPanel({
 
 // ─── MAIN ─────────────────────────────────────────────────────────────────────
 
-export function SchedulePage({ lang }: { lang: string }) {
+export function StudentSchedulePage({ lang }: { lang: string }) {
   const [selectedTutorId, setSelectedTutorId] = useState<string>("");
   const [selection, setSelection] = useState<Selection | null>(null);
+  const [tutors, setTutors] = useState<TutorOption[]>([]);
+  const [pastTeachers, setPastTeachers] = useState<PastTeacher[]>([]);
+  const [studentUid, setStudentUid] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
-  const tutor = TUTORS.find((t) => String(t.id) === selectedTutorId) ?? null;
+  const tutor = tutors.find((t) => t.id === selectedTutorId) ?? null;
   const weekendDates = getWeekendDates();
   const panelOpen = selection !== null && tutor !== null;
+
+  async function getStudentUid() {
+    const { data } = await supabase.auth.getUser();
+    return data.user?.id ?? readStoredUser()?.uid;
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadScheduleData() {
+      setLoading(true);
+      setError("");
+
+      const uid = await getStudentUid();
+      if (!uid) {
+        if (!cancelled) {
+          setError("No student uid available.");
+          setLoading(false);
+        }
+        return;
+      }
+
+      setStudentUid(uid);
+
+      const { data: studentProfile, error: studentError } = await supabase
+        .from("student_profiles")
+        .select("grade")
+        .eq("uid", uid)
+        .single();
+
+      if (studentError) {
+        if (!cancelled) {
+          setError(studentError.message);
+          setLoading(false);
+        }
+        return;
+      }
+
+      const band = gradeBand(studentProfile.grade);
+      const availabilitySelect = ["uid", "grades_to_tutor", ...AVAILABILITY_COLUMNS].join(", ");
+      const { data: tutorProfiles, error: tutorsError } = await supabase
+        .from("tutor_profiles")
+        .select(availabilitySelect);
+
+      if (tutorsError) {
+        if (!cancelled) {
+          setError(tutorsError.message);
+          setLoading(false);
+        }
+        return;
+      }
+
+      const matchingTutorProfiles = ((tutorProfiles ?? []) as unknown as TutorProfileRow[])
+        .filter((profile) => matchesGradeBand(profile.grades_to_tutor, band));
+      const tutorUids = matchingTutorProfiles.map((profile) => profile.uid);
+      const profileNames = new Map<string, string>();
+
+      if (tutorUids.length > 0) {
+        const { data: profiles, error: profileError } = await supabase
+          .from("profiles")
+          .select("uid, name")
+          .in("uid", tutorUids);
+
+        if (profileError) {
+          if (!cancelled) {
+            setError(profileError.message);
+            setLoading(false);
+          }
+          return;
+        }
+
+        ((profiles ?? []) as ProfileRow[]).forEach((profile) => {
+          profileNames.set(profile.uid, profile.name);
+        });
+      }
+
+      const { data: classRows, error: classesError } = await supabase
+        .from("classes")
+        .select("lesson_id, student_uid, teacher_uid, lesson_date, start_time, end_time")
+        .eq("student_uid", uid);
+
+      if (classesError) {
+        if (!cancelled) {
+          setError(classesError.message);
+          setLoading(false);
+        }
+        return;
+      }
+
+      const teacherCounts = new Map<string, number>();
+      ((classRows ?? []) as ClassRow[]).forEach((cls) => {
+        teacherCounts.set(cls.teacher_uid, (teacherCounts.get(cls.teacher_uid) ?? 0) + 1);
+      });
+      const pastTeacherUids = Array.from(teacherCounts.keys()).filter((teacherUid) => !profileNames.has(teacherUid));
+
+      if (pastTeacherUids.length > 0) {
+        const { data: profiles, error: profileError } = await supabase
+          .from("profiles")
+          .select("uid, name")
+          .in("uid", pastTeacherUids);
+
+        if (profileError) {
+          if (!cancelled) {
+            setError(profileError.message);
+            setLoading(false);
+          }
+          return;
+        }
+
+        ((profiles ?? []) as ProfileRow[]).forEach((profile) => {
+          profileNames.set(profile.uid, profile.name);
+        });
+      }
+
+      if (!cancelled) {
+        setTutors(matchingTutorProfiles.map((profile) => ({
+          id: profile.uid,
+          name: profileNames.get(profile.uid) ?? profile.uid,
+          gradesToTutor: profile.grades_to_tutor,
+          availability: profileAvailability(profile),
+        })));
+        setPastTeachers(Array.from(teacherCounts.entries())
+          .map(([uid, count]) => ({ uid, count, name: profileNames.get(uid) ?? uid }))
+          .sort((a, b) => b.count - a.count));
+        setLoading(false);
+      }
+    }
+
+    loadScheduleData();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   function handleSlotClick(day: Day, slotIdx: number) {
     if (!selection || selection.day !== day) {
@@ -375,10 +560,35 @@ export function SchedulePage({ lang }: { lang: string }) {
     setSelection(null);
   }
 
+  async function confirmBooking() {
+    if (!selection || !tutor || !studentUid) return false;
+
+    setError("");
+
+    const lessonDate = formatDbDate(weekendDates[selection.day]);
+    const startSlot = selection.slots[0];
+    const endSlot = selection.slots[selection.slots.length - 1];
+    const { error: insertError } = await supabase.from("classes").insert({
+      student_uid: studentUid,
+      teacher_uid: tutor.id,
+      lesson_date: lessonDate,
+      start_time: dbTime(startSlot),
+      end_time: dbTime(endSlot, true),
+      evaluation_completed: false,
+    });
+
+    if (insertError) {
+      setError(insertError.message);
+      return false;
+    }
+
+    return true;
+  }
+
   return (
-    <div className="flex gap-5 h-full min-h-0 overflow-hidden">
+    <div className="flex h-full min-h-0 flex-col gap-5 overflow-y-auto lg:flex-row lg:overflow-hidden">
       {/* Left: schedule picker */}
-      <div className="flex-1 flex flex-col gap-5 min-w-0 overflow-y-auto pr-1">
+      <div className="flex min-w-0 flex-1 flex-col gap-5 lg:overflow-y-auto lg:pr-1">
         {/* Header */}
         <div>
           <h2 className="text-foreground">{lang === "zh" ? "预约课程" : "Schedule a Session"}</h2>
@@ -389,13 +599,42 @@ export function SchedulePage({ lang }: { lang: string }) {
           </p>
         </div>
 
+        {error && (
+          <div className="rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            {error}
+          </div>
+        )}
+
+        {loading && (
+          <div className="rounded-2xl border border-border bg-card p-5 text-sm text-muted-foreground">
+            {lang === "zh" ? "正在加载老师和课程表..." : "Loading tutors and availability..."}
+          </div>
+        )}
+
+        {pastTeachers.length > 0 && (
+          <div className="rounded-2xl border border-border bg-card p-4">
+            <p className="text-sm text-card-foreground">{lang === "zh" ? "过去上过课的老师" : "Past teachers used"}</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {pastTeachers.map((teacher) => (
+                <button
+                  key={teacher.uid}
+                  type="button"
+                  onClick={() => tutors.some((t) => t.id === teacher.uid) && handleChangeTutor(teacher.uid)}
+                  disabled={!tutors.some((t) => t.id === teacher.uid)}
+                  className="rounded-full border border-border bg-background px-3 py-1.5 text-xs text-card-foreground transition-colors hover:border-primary/40 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {teacher.name} · {teacher.count}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Tutor dropdown */}
         <Select.Root value={selectedTutorId} onValueChange={handleChangeTutor}>
-          <Select.Trigger className="flex items-center justify-between gap-2 w-full max-w-sm bg-card border border-border rounded-xl px-4 py-3 text-sm text-card-foreground hover:border-primary/40 transition-colors cursor-pointer outline-none data-[placeholder]:text-muted-foreground">
+          <Select.Trigger className="flex w-full items-center justify-between gap-2 rounded-xl border border-border bg-card px-4 py-3 text-sm text-card-foreground outline-none transition-colors hover:border-primary/40 data-[placeholder]:text-muted-foreground sm:max-w-sm">
             <div className="flex items-center gap-2.5 min-w-0">
-              {tutor && (
-                <img src={tutor.avatar} alt={tutor.name} className="w-6 h-6 rounded-full object-cover shrink-0" />
-              )}
+              {tutor && <BlankAvatar size={24} />}
               <Select.Value placeholder={lang === "zh" ? "选择老师…" : "Select a tutor…"} />
             </div>
             <Select.Icon>
@@ -405,16 +644,16 @@ export function SchedulePage({ lang }: { lang: string }) {
           <Select.Portal>
             <Select.Content className="bg-popover border border-border rounded-xl shadow-xl z-50 w-[--radix-select-trigger-width] overflow-hidden">
               <Select.Viewport className="p-1.5">
-                {TUTORS.map((t) => (
+                {tutors.map((t) => (
                   <Select.Item
                     key={t.id}
-                    value={String(t.id)}
+                    value={t.id}
                     className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-popover-foreground cursor-pointer outline-none data-[highlighted]:bg-accent"
                   >
-                    <img src={t.avatar} alt={t.name} className="w-7 h-7 rounded-full object-cover shrink-0" />
+                    <BlankAvatar size={28} />
                     <div className="flex-1 min-w-0">
                       <Select.ItemText>{t.name}</Select.ItemText>
-                      <p className="text-xs text-muted-foreground">{t.subject}</p>
+                      <p className="text-xs text-muted-foreground">{t.gradesToTutor}</p>
                     </div>
                   </Select.Item>
                 ))}
@@ -447,8 +686,17 @@ export function SchedulePage({ lang }: { lang: string }) {
         )}
 
         {/* Time grid */}
-        {tutor ? (
-          <div className="grid grid-cols-2 gap-4">
+        {!loading && tutors.length === 0 ? (
+          <div className="flex-1 flex flex-col items-center justify-center gap-3 text-muted-foreground py-20">
+            <div className="w-16 h-16 rounded-2xl bg-muted flex items-center justify-center">
+              <User size={28} className="opacity-40" />
+            </div>
+            <p className="text-sm">
+              {lang === "zh" ? "暂无匹配年级的老师。" : "No tutors match this student's grade yet."}
+            </p>
+          </div>
+        ) : tutor ? (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <DayColumn
               day="sat"
               date={weekendDates.sat}
@@ -479,7 +727,7 @@ export function SchedulePage({ lang }: { lang: string }) {
       {/* Right: booking panel */}
       <div
         className={`shrink-0 bg-card border border-border rounded-2xl overflow-hidden transition-all duration-300 ${
-          panelOpen ? "w-80 opacity-100" : "w-0 opacity-0 border-transparent"
+          panelOpen ? "min-h-[32rem] w-full opacity-100 lg:min-h-0 lg:w-80" : "h-0 w-full opacity-0 border-transparent lg:h-auto lg:w-0"
         }`}
       >
         {panelOpen && (
@@ -488,6 +736,7 @@ export function SchedulePage({ lang }: { lang: string }) {
             tutor={tutor!}
             weekendDates={weekendDates}
             onClose={() => setSelection(null)}
+            onConfirm={confirmBooking}
             lang={lang}
           />
         )}
