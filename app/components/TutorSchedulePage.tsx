@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { CalendarDays, Clock, User, X } from "lucide-react";
 import { supabase } from "../../lib/supabase/client";
+import { useLanguage } from "../i18n";
 
 type Day = "sat" | "sun";
 type Availability = Record<Day, number[]>;
@@ -41,7 +42,8 @@ const AVAILABILITY_COLUMNS = (["sat", "sun"] as Day[]).flatMap((day) =>
 );
 
 function getWeekendDates() {
-  const today = new Date(2026, 5, 9);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
   const dayOfWeek = today.getDay();
   const daysUntilSat = (6 - dayOfWeek + 7) % 7 || 7;
   const sat = new Date(today);
@@ -51,8 +53,8 @@ function getWeekendDates() {
   return { sat, sun };
 }
 
-function formatDate(d: Date) {
-  return d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+function formatDate(d: Date, lang: string = "en") {
+  return d.toLocaleDateString(lang === "zh" ? "zh-CN" : "en-US", { weekday: "long", month: "long", day: "numeric" });
 }
 
 function formatDbDate(d: Date) {
@@ -135,11 +137,12 @@ function BookingPanel({
   onCancelClass: () => void;
   lang: string;
 }) {
+  const { t } = useLanguage();
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
         <p className="text-card-foreground text-sm">
-          {lang === "zh" ? "已预约课程" : "Booked Session"}
+          {t("schedule.bookedSession")}
         </p>
         <button
           onClick={onClose}
@@ -156,13 +159,13 @@ function BookingPanel({
           </div>
           <div>
             <p className="text-sm text-card-foreground">{booking.student}</p>
-            <p className="text-xs text-muted-foreground">{lang === "zh" ? "学生" : "Student"}</p>
+            <p className="text-xs text-muted-foreground">{t("common.student")}</p>
           </div>
         </div>
 
         <div className="flex flex-col gap-2.5">
           <p className="text-xs text-muted-foreground uppercase tracking-wide">
-            {lang === "zh" ? "课程详情" : "Session Details"}
+            {t("schedule.sessionDetails")}
           </p>
           <div className="flex flex-col gap-2">
             <div className="flex items-center gap-2.5 text-sm text-card-foreground">
@@ -178,7 +181,7 @@ function BookingPanel({
 
         <div className="flex flex-col gap-2">
           <p className="text-xs text-muted-foreground uppercase tracking-wide">
-            {lang === "zh" ? "学生备注" : "Student Note"}
+            {t("schedule.studentNote")}
           </p>
           <div className="rounded-xl bg-muted px-3.5 py-3 text-sm text-card-foreground leading-relaxed">
             {booking.note}
@@ -191,7 +194,7 @@ function BookingPanel({
           onClick={onCancelClass}
           className="w-full rounded-xl border border-border bg-card py-3 text-sm text-card-foreground hover:bg-accent transition-colors"
         >
-          Mark unavailable
+          {t("schedule.markUnavailable")}
         </button>
       </div>
     </div>
@@ -207,6 +210,7 @@ function CancelBookingDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const { t } = useLanguage();
   return (
     <Dialog.Root open={booking !== null} onOpenChange={(open) => !open && onCancel()}>
       <Dialog.Portal>
@@ -215,10 +219,10 @@ function CancelBookingDialog({
           <div className="flex items-start justify-between gap-4">
             <div>
               <Dialog.Title className="text-card-foreground">
-                Cancel booked class?
+                {t("schedule.cancelBookedClass")}
               </Dialog.Title>
               <Dialog.Description className="mt-2 text-sm text-muted-foreground leading-relaxed">
-                You will cancel the class with {booking?.student}. Are you sure?
+                {t("schedule.cancelBookedClassHelp", { student: booking?.student ?? "" })}
               </Dialog.Description>
             </div>
             <button
@@ -233,13 +237,13 @@ function CancelBookingDialog({
               onClick={onCancel}
               className="rounded-xl border border-border bg-card px-4 py-2 text-sm text-card-foreground hover:bg-accent transition-colors"
             >
-              No
+              {t("common.no")}
             </button>
             <button
               onClick={onConfirm}
               className="rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 transition-colors"
             >
-              Confirm
+              {t("common.confirm")}
             </button>
           </div>
         </Dialog.Content>
@@ -261,15 +265,16 @@ function SlotButton({
   booking?: Booking;
   onClick: (day: Day, slotIdx: number) => void;
 }) {
+  const { t } = useLanguage();
   let stateClass = "bg-muted/50 text-muted-foreground/40 border-transparent hover:bg-muted";
-  let label = "Unavailable";
+  let label = t("common.unavailable");
 
   if (booking && available) {
     stateClass = "bg-emerald-50 text-emerald-900 border-emerald-200 hover:border-emerald-300";
     label = booking.student;
   } else if (available) {
     stateClass = "bg-card text-card-foreground border-border hover:border-primary/40 hover:bg-accent";
-    label = "Available";
+    label = t("common.available");
   }
 
   return (
@@ -296,11 +301,12 @@ function DayColumn({
   bookings: Record<string, Booking>;
   onToggle: (day: Day, slotIdx: number) => void;
 }) {
+  const { lang, t } = useLanguage();
   return (
     <div className="flex flex-col gap-1.5">
       <div className="mb-2">
-        <p className="text-card-foreground text-sm">{day === "sat" ? "Saturday" : "Sunday"}</p>
-        <p className="text-xs text-muted-foreground">{formatDate(date)}</p>
+        <p className="text-card-foreground text-sm">{day === "sat" ? t("common.saturday") : t("common.sunday")}</p>
+        <p className="text-xs text-muted-foreground">{formatDate(date, lang)}</p>
       </div>
       {SLOT_TIMES.map((_, idx) => (
         <SlotButton
@@ -317,6 +323,7 @@ function DayColumn({
 }
 
 export function TutorSchedulePage({ lang }: { lang: string }) {
+  const { t } = useLanguage();
   const weekendDates = getWeekendDates();
   const [availability, setAvailability] = useState<Availability>({
     sat: ALL_SLOT_INDICES,
@@ -329,6 +336,7 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
   const [availabilityUnset, setAvailabilityUnset] = useState(false);
   const [saved, setSaved] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [currentTutorUid, setCurrentTutorUid] = useState("");
   const [selectedBookingKey, setSelectedBookingKey] = useState<string | null>(null);
   const [pendingCancel, setPendingCancel] = useState<{ day: Day; slotIdx: number; booking: Booking } | null>(null);
 
@@ -348,9 +356,12 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
       setError("");
 
       const tutorUid = await getTutorUid();
+      if (!cancelled) {
+        setCurrentTutorUid(tutorUid ?? "");
+      }
       if (!tutorUid) {
         if (!cancelled) {
-          setError("No tutor uid available.");
+          setError(t("common.noTutorUid"));
           setLoading(false);
         }
         return;
@@ -361,11 +372,19 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
         .from("tutor_profiles")
         .select(availabilitySelect)
         .eq("uid", tutorUid)
-        .single();
+        .maybeSingle();
 
       if (profileError) {
         if (!cancelled) {
           setError(profileError.message);
+          setLoading(false);
+        }
+        return;
+      }
+
+      if (!profile) {
+        if (!cancelled) {
+          setError(t("common.noTutorProfile"));
           setLoading(false);
         }
         return;
@@ -423,7 +442,7 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
         const booking: Booking = {
           student,
           note: "",
-          date: formatDate(day === "sat" ? weekendDates.sat : weekendDates.sun),
+          date: formatDate(day === "sat" ? weekendDates.sat : weekendDates.sun, lang),
           time: `${formatTime(cls.start_time)} - ${formatTime(cls.end_time)}`,
         };
 
@@ -496,7 +515,7 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
 
     const tutorUid = await getTutorUid();
     if (!tutorUid) {
-      setError("No tutor uid available.");
+      setError(t("common.noTutorUid"));
       setSaving(false);
       return;
     }
@@ -523,12 +542,15 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
       <div className="flex h-full min-h-0 flex-col gap-5 overflow-y-auto lg:flex-row lg:overflow-hidden">
         <div className="flex min-w-0 flex-1 flex-col gap-5 lg:overflow-y-auto lg:pr-1">
           <div>
-            <h2 className="text-foreground">{lang === "zh" ? "设置可用时间" : "Set Availability"}</h2>
+            <h2 className="text-foreground">{t("schedule.setAvailability")}</h2>
             <p className="text-sm text-muted-foreground mt-0.5">
-              {lang === "zh"
-                ? "点击时间段来标记你本周可以上课的时间。"
-                : "Click time slots to mark when you are available this week."}
+              {t("schedule.setAvailabilityHelp")}
             </p>
+            {currentTutorUid && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t("common.tutorUid", { uid: currentTutorUid })}
+              </p>
+            )}
           </div>
 
           {error && (
@@ -539,15 +561,15 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
 
           {loading && (
             <div className="bg-card border border-border rounded-2xl p-5 text-sm text-muted-foreground">
-              {lang === "zh" ? "正在加载课程表..." : "Loading your schedule..."}
+              {t("schedule.loadingSchedule")}
             </div>
           )}
 
           {availabilityUnset && !loading && (
             <div className="bg-card border border-border rounded-2xl p-5 flex items-center justify-between gap-4">
               <div>
-                <p className="text-card-foreground text-sm">You haven't filled out your availability yet.</p>
-                <p className="text-sm text-muted-foreground mt-0.5">All slots are shown as available by default. Click slots to mark them unavailable, then save.</p>
+                <p className="text-card-foreground text-sm">{t("schedule.availabilityUnsetTitle")}</p>
+                <p className="text-sm text-muted-foreground mt-0.5">{t("schedule.availabilityUnsetHelp")}</p>
               </div>
               <CalendarDays size={28} className="text-primary shrink-0" />
             </div>
@@ -556,8 +578,8 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
           {!saved && !availabilityUnset && !hasAvailability && (
             <div className="bg-card border border-border rounded-2xl p-5 flex items-center justify-between gap-4">
               <div>
-                <p className="text-card-foreground text-sm">You haven't selected your availability for this week.</p>
-                <p className="text-sm text-muted-foreground mt-0.5">Choose the slots you can teach, then save your availability.</p>
+                <p className="text-card-foreground text-sm">{t("schedule.noAvailabilityTitle")}</p>
+                <p className="text-sm text-muted-foreground mt-0.5">{t("schedule.noAvailabilityHelp")}</p>
               </div>
               <CalendarDays size={28} className="text-primary shrink-0" />
             </div>
@@ -567,15 +589,15 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
             <div className="flex items-center gap-4 text-xs text-muted-foreground flex-wrap">
               <span className="flex items-center gap-1.5">
                 <span className="w-3 h-3 rounded bg-card border border-border inline-block" />
-                Available
+                {t("common.available")}
               </span>
               <span className="flex items-center gap-1.5">
                 <span className="w-3 h-3 rounded bg-muted/50 inline-block" />
-                Unavailable
+                {t("common.unavailable")}
               </span>
               <span className="flex items-center gap-1.5">
                 <span className="w-3 h-3 rounded bg-emerald-50 border border-emerald-200 inline-block" />
-                Booked
+                {t("common.booked")}
               </span>
             </div>
             <button
@@ -583,7 +605,7 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
               disabled={!hasAvailability || saving || loading}
               className="rounded-xl bg-primary px-5 py-2.5 text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {saving ? "Saving..." : saved && !dirty ? "Availability saved" : "Save availability"}
+              {saving ? t("common.saving") : saved && !dirty ? t("common.availabilitySaved") : t("common.saveAvailability")}
             </button>
           </div>
 

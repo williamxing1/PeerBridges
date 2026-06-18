@@ -4,13 +4,14 @@ import { useEffect, useState } from "react";
 import * as Select from "@radix-ui/react-select";
 import { ChevronDown, ChevronRight, X, CalendarDays, Clock, User, CheckCircle2 } from "lucide-react";
 import { supabase } from "../../lib/supabase/client";
+import { useLanguage } from "../i18n";
 
 // ─── DATA ─────────────────────────────────────────────────────────────────────
 
-// Next Saturday and Sunday
 function getWeekendDates() {
-  const today = new Date(2026, 5, 9); // June 9 2026 (Tuesday)
-  const dayOfWeek = today.getDay(); // 2 = Tuesday
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const dayOfWeek = today.getDay();
   const daysUntilSat = (6 - dayOfWeek + 7) % 7 || 7;
   const sat = new Date(today);
   sat.setDate(today.getDate() + daysUntilSat);
@@ -37,8 +38,8 @@ const AVAILABILITY_COLUMNS = (["sat", "sun"] as Day[]).flatMap((day) =>
 );
 const storedUserKey = "tutorflow-user";
 
-function formatDate(d: Date) {
-  return d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+function formatDate(d: Date, lang: string = "en") {
+  return d.toLocaleDateString(lang === "zh" ? "zh-CN" : "en-US", { weekday: "long", month: "long", day: "numeric" });
 }
 
 function formatDbDate(d: Date) {
@@ -155,6 +156,7 @@ function SlotButton({
   selection: Selection | null;
   onSelect: (day: Day, slotIdx: number) => void;
 }) {
+  const { t } = useLanguage();
   const isSelected =
     selection?.day === day && selection.slots.includes(slotIdx);
   const isFirstSelected =
@@ -186,13 +188,13 @@ function SlotButton({
     >
       <span>{SLOT_TIMES[slotIdx]}</span>
       {available && !isSelected && (
-        <span className="opacity-40 text-[10px]">Available</span>
+        <span className="opacity-40 text-[10px]">{t("common.available")}</span>
       )}
       {isSelected && isFirstSelected && !isTwoSlot && (
-        <span className="text-[10px] opacity-80">30 min</span>
+        <span className="text-[10px] opacity-80">{t("common.thirtyMinutesShort")}</span>
       )}
       {isSelected && isLastSelected && isTwoSlot && (
-        <span className="text-[10px] opacity-80">1 hr</span>
+        <span className="text-[10px] opacity-80">{t("common.oneHourShort")}</span>
       )}
     </button>
   );
@@ -213,11 +215,12 @@ function DayColumn({
   selection: Selection | null;
   onSelect: (day: Day, slotIdx: number) => void;
 }) {
+  const { lang, t } = useLanguage();
   return (
     <div className="flex flex-col gap-1.5">
       <div className="mb-2">
-        <p className="text-card-foreground text-sm">{day === "sat" ? "Saturday" : "Sunday"}</p>
-        <p className="text-xs text-muted-foreground">{formatDate(date)}</p>
+        <p className="text-card-foreground text-sm">{day === "sat" ? t("common.saturday") : t("common.sunday")}</p>
+        <p className="text-xs text-muted-foreground">{formatDate(date, lang)}</p>
       </div>
       {SLOT_TIMES.map((_, idx) => (
         <SlotButton
@@ -250,6 +253,7 @@ function BookingPanel({
   onConfirm: () => Promise<boolean>;
   lang: string;
 }) {
+  const { t } = useLanguage();
   const [note, setNote] = useState("");
   const [confirmed, setConfirmed] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -257,9 +261,9 @@ function BookingPanel({
   const date = weekendDates[selection.day];
   const startSlot = selection.slots[0];
   const endSlot = selection.slots[selection.slots.length - 1];
-  const duration = selection.slots.length === 2 ? "1 hour" : "30 minutes";
+  const duration = selection.slots.length === 2 ? t("common.oneHour") : t("common.thirtyMinutes");
   const timeRange = `${SLOT_TIMES[startSlot]} – ${SLOT_ENDS[endSlot]}`;
-  const dateLabel = formatDate(date);
+  const dateLabel = formatDate(date, lang);
 
   if (confirmed) {
     return (
@@ -269,19 +273,17 @@ function BookingPanel({
         </div>
         <div>
           <p className="text-card-foreground mb-1">
-            {lang === "zh" ? "预约成功！" : "Session Booked!"}
+            {t("schedule.sessionBooked")}
           </p>
           <p className="text-sm text-muted-foreground">
-            {lang === "zh"
-              ? `您的课程已安排于 ${dateLabel}，${timeRange}。`
-              : `Your class is booked for ${dateLabel} at ${timeRange}.`}
+            {t("schedule.bookedFor", { date: dateLabel, time: timeRange })}
           </p>
         </div>
         <button
           onClick={onClose}
           className="mt-2 text-sm text-primary underline cursor-pointer"
         >
-          {lang === "zh" ? "关闭" : "Close"}
+          {t("common.close")}
         </button>
       </div>
     );
@@ -292,7 +294,7 @@ function BookingPanel({
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
         <p className="text-card-foreground text-sm">
-          {lang === "zh" ? "确认预约" : "Confirm Booking"}
+          {t("schedule.confirmBooking")}
         </p>
         <button
           onClick={onClose}
@@ -315,7 +317,7 @@ function BookingPanel({
         {/* Session details */}
         <div className="flex flex-col gap-2.5">
           <p className="text-xs text-muted-foreground uppercase tracking-wide">
-            {lang === "zh" ? "课程详情" : "Session Details"}
+            {t("schedule.sessionDetails")}
           </p>
           <div className="flex flex-col gap-2">
             <div className="flex items-center gap-2.5 text-sm text-card-foreground">
@@ -329,7 +331,7 @@ function BookingPanel({
             <div className="flex items-center gap-2.5 text-sm text-card-foreground">
               <User size={15} className="text-muted-foreground shrink-0" />
               <span>
-                {lang === "zh" ? "时长：" : "Duration: "}
+                {t("common.duration")}
                 <span className="text-primary">{duration}</span>
               </span>
             </div>
@@ -339,15 +341,13 @@ function BookingPanel({
         {/* Note */}
         <div className="flex flex-col gap-2">
           <label className="text-xs text-muted-foreground uppercase tracking-wide">
-            {lang === "zh" ? "有什么想提前分享的吗？" : "Anything to share for this session?"}
+            {t("schedule.sharePrompt")}
           </label>
           <textarea
             value={note}
             onChange={(e) => setNote(e.target.value)}
             placeholder={
-              lang === "zh"
-                ? "例如：我在相关速率的部分有点卡住了……"
-                : "e.g. I've been stuck on related rates problems and want to focus on those..."
+              t("schedule.sharePlaceholder")
             }
             rows={4}
             className="w-full bg-muted rounded-xl px-3.5 py-3 text-sm text-card-foreground placeholder:text-muted-foreground resize-none outline-none focus:ring-2 focus:ring-primary/30 transition-all"
@@ -369,12 +369,10 @@ function BookingPanel({
           disabled={saving}
           className="w-full bg-primary text-primary-foreground rounded-xl py-3 text-sm hover:bg-primary/90 transition-colors cursor-pointer shadow-sm"
         >
-          {saving ? "Booking..." : lang === "zh" ? "确认预约" : "Confirm Booking"}
+          {saving ? t("common.booking") : t("schedule.confirmBooking")}
         </button>
         <p className="text-center text-xs text-muted-foreground mt-2.5">
-          {lang === "zh"
-            ? "提交后，老师将收到通知。"
-            : "Your tutor will be notified once confirmed."}
+          {t("schedule.notifyTutor")}
         </p>
       </div>
     </div>
@@ -384,6 +382,7 @@ function BookingPanel({
 // ─── MAIN ─────────────────────────────────────────────────────────────────────
 
 export function StudentSchedulePage({ lang }: { lang: string }) {
+  const { t } = useLanguage();
   const [selectedTutorId, setSelectedTutorId] = useState<string>("");
   const [selection, setSelection] = useState<Selection | null>(null);
   const [tutors, setTutors] = useState<TutorOption[]>([]);
@@ -411,7 +410,7 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
       const uid = await getStudentUid();
       if (!uid) {
         if (!cancelled) {
-          setError("No student uid available.");
+          setError(t("common.noStudentUid"));
           setLoading(false);
         }
         return;
@@ -423,11 +422,11 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
         .from("student_profiles")
         .select("grade")
         .eq("uid", uid)
-        .single();
+        .maybeSingle();
 
-      if (studentError) {
+      if (studentError || !studentProfile) {
         if (!cancelled) {
-          setError(studentError.message);
+          setError(studentError?.message ?? t("common.noStudentProfile"));
           setLoading(false);
         }
         return;
@@ -591,11 +590,9 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
       <div className="flex min-w-0 flex-1 flex-col gap-5 lg:overflow-y-auto lg:pr-1">
         {/* Header */}
         <div>
-          <h2 className="text-foreground">{lang === "zh" ? "预约课程" : "Schedule a Session"}</h2>
+          <h2 className="text-foreground">{t("schedule.studentTitle")}</h2>
           <p className="text-sm text-muted-foreground mt-0.5">
-            {lang === "zh"
-              ? "选择一位老师，查看可用时间段并选择你的时间。"
-              : "Select a tutor, then pick one or two consecutive slots to book a session."}
+            {t("schedule.studentHelp")}
           </p>
         </div>
 
@@ -607,13 +604,13 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
 
         {loading && (
           <div className="rounded-2xl border border-border bg-card p-5 text-sm text-muted-foreground">
-            {lang === "zh" ? "正在加载老师和课程表..." : "Loading tutors and availability..."}
+            {t("schedule.loadingTutors")}
           </div>
         )}
 
         {pastTeachers.length > 0 && (
           <div className="rounded-2xl border border-border bg-card p-4">
-            <p className="text-sm text-card-foreground">{lang === "zh" ? "过去上过课的老师" : "Past teachers used"}</p>
+            <p className="text-sm text-card-foreground">{t("schedule.pastTeachers")}</p>
             <div className="mt-3 flex flex-wrap gap-2">
               {pastTeachers.map((teacher) => (
                 <button
@@ -635,7 +632,7 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
           <Select.Trigger className="flex w-full items-center justify-between gap-2 rounded-xl border border-border bg-card px-4 py-3 text-sm text-card-foreground outline-none transition-colors hover:border-primary/40 data-[placeholder]:text-muted-foreground sm:max-w-sm">
             <div className="flex items-center gap-2.5 min-w-0">
               {tutor && <BlankAvatar size={24} />}
-              <Select.Value placeholder={lang === "zh" ? "选择老师…" : "Select a tutor…"} />
+              <Select.Value placeholder={t("schedule.selectTutor")} />
             </div>
             <Select.Icon>
               <ChevronDown size={15} className="text-muted-foreground shrink-0" />
@@ -667,20 +664,18 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
           <div className="flex items-center gap-4 text-xs text-muted-foreground flex-wrap">
             <span className="flex items-center gap-1.5">
               <span className="w-3 h-3 rounded bg-primary inline-block" />
-              {lang === "zh" ? "已选" : "Selected"}
+              {t("common.selected")}
             </span>
             <span className="flex items-center gap-1.5">
               <span className="w-3 h-3 rounded bg-card border border-border inline-block" />
-              {lang === "zh" ? "可用" : "Available"}
+              {t("common.available")}
             </span>
             <span className="flex items-center gap-1.5">
               <span className="w-3 h-3 rounded bg-muted/50 inline-block" />
-              {lang === "zh" ? "不可用" : "Unavailable"}
+              {t("common.unavailable")}
             </span>
             <span className="text-muted-foreground/70">
-              {lang === "zh"
-                ? "· 选择相邻两个时间段预约1小时课程"
-                : "· Select 2 consecutive slots to book a 1-hour session"}
+              {t("schedule.oneHourHint")}
             </span>
           </div>
         )}
@@ -692,7 +687,7 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
               <User size={28} className="opacity-40" />
             </div>
             <p className="text-sm">
-              {lang === "zh" ? "暂无匹配年级的老师。" : "No tutors match this student's grade yet."}
+              {t("schedule.noMatchingTutors")}
             </p>
           </div>
         ) : tutor ? (
@@ -718,7 +713,7 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
               <CalendarDays size={28} className="opacity-40" />
             </div>
             <p className="text-sm">
-              {lang === "zh" ? "请先选择一位老师以查看可用时间。" : "Select a tutor above to see their availability."}
+              {t("schedule.selectTutorPrompt")}
             </p>
           </div>
         )}

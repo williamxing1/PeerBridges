@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import * as Select from "@radix-ui/react-select";
 import { BookOpen, Check, ChevronDown } from "lucide-react";
 import { supabase } from "../lib/supabase/client";
+import { LanguageProvider, LanguageSelect, optionLabel, useLanguage, type Lang, type TranslationKey } from "./i18n";
 
 type Mode = "login" | "register";
 type Role = "student" | "tutor" | "administrator";
@@ -29,10 +30,10 @@ type StoredUser = {
 
 const storedUserKey = "tutorflow-user";
 
-const roleOptions: Array<{ id: Role; label: string }> = [
-  { id: "student", label: "Student" },
-  { id: "tutor", label: "Tutor" },
-  { id: "administrator", label: "Administrator" }
+const roleOptions: Array<{ id: Role; labelKey: TranslationKey }> = [
+  { id: "student", labelKey: "role.student" },
+  { id: "tutor", labelKey: "role.tutor" },
+  { id: "administrator", labelKey: "role.administrator" }
 ];
 
 const registerRoleOptions = roleOptions.filter((option) => option.id !== "administrator");
@@ -41,7 +42,7 @@ const provinces = ["Ontario", "British Columbia", "Alberta", "Quebec", "Californ
 const cities = ["Toronto", "Vancouver", "Calgary", "Montreal", "Los Angeles", "New York City"];
 const teachers = ["Ivy Wong", "Dr. Sarah Mitchell", "Ms. Karen Liu"];
 const gradeOptions = ["Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6", "Grade 7", "Grade 8", "Grade 9", "Grade 10", "Grade 11", "Grade 12"];
-const englishLevels = ["Beginner", "Primary", "Intermediate"];
+const englishLevels = ["Beginner", "Intermediate", "Advanced"];
 const tutorStudentGrades = ["Elementary school", "Middle school", "High school"];
 
 function isAlreadyRegisteredError(message: string) {
@@ -85,13 +86,15 @@ function SelectField({
   placeholder,
   options,
   value,
-  onChange
+  onChange,
+  getOptionLabel = (option) => option,
 }: {
   label: string;
   placeholder: string;
   options: string[];
   value: string;
   onChange: (value: string) => void;
+  getOptionLabel?: (option: string) => string;
 }) {
   return (
     <label className="block">
@@ -112,7 +115,7 @@ function SelectField({
                   value={option}
                   className="flex cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-sm text-popover-foreground outline-none data-[highlighted]:bg-accent"
                 >
-                  <Select.ItemText>{option}</Select.ItemText>
+                  <Select.ItemText>{getOptionLabel(option)}</Select.ItemText>
                   <Select.ItemIndicator>
                     <Check size={14} className="text-primary" />
                   </Select.ItemIndicator>
@@ -129,11 +132,13 @@ function SelectField({
 function RoleTabs({
   options,
   role,
-  setRole
+  setRole,
+  t,
 }: {
-  options: Array<{ id: Role; label: string }>;
+  options: Array<{ id: Role; labelKey: TranslationKey }>;
   role: Role;
   setRole: (role: Role) => void;
+  t: (key: TranslationKey) => string;
 }) {
   return (
     <div className="flex w-full flex-wrap gap-1 rounded-xl bg-muted p-1 sm:w-fit">
@@ -146,7 +151,7 @@ function RoleTabs({
             role === option.id ? "bg-card text-card-foreground shadow-sm" : "text-muted-foreground hover:text-card-foreground"
           }`}
         >
-          {option.label}
+          {t(option.labelKey)}
         </button>
       ))}
     </div>
@@ -154,7 +159,8 @@ function RoleTabs({
 }
 
 type LoginFieldsProps = {
-  role: Role;
+  lang: Lang;
+  t: (key: TranslationKey) => string;
   email: string;
   setEmail: (value: string) => void;
   password: string;
@@ -162,6 +168,7 @@ type LoginFieldsProps = {
 };
 
 type RegisterFieldsProps = LoginFieldsProps & {
+  role: Role;
   name: string;
   setName: (value: string) => void;
   wechatId: string;
@@ -190,18 +197,11 @@ type RegisterFieldsProps = LoginFieldsProps & {
   setHowFoundOut: (value: string) => void;
 };
 
-function LoginFields({ role, email, setEmail, password, setPassword }: LoginFieldsProps) {
-  const emailLabel =
-    role === "student"
-      ? "Student Email"
-      : role === "tutor"
-        ? "Tutor Email"
-        : "Administrator Email";
-
+function LoginFields({ t, email, setEmail, password, setPassword }: LoginFieldsProps) {
   return (
     <div className="grid gap-4">
-      <Field label={emailLabel} type="email" placeholder="you@example.com" value={email} onChange={setEmail} />
-      <Field label="Password" type="password" placeholder="Enter your password" minLength={6} value={password} onChange={setPassword} />
+      <Field label={t("auth.email")} type="email" placeholder="you@example.com" value={email} onChange={setEmail} />
+      <Field label={t("auth.password")} type="password" placeholder={t("auth.enterPassword")} minLength={6} value={password} onChange={setPassword} />
     </div>
   );
 }
@@ -238,20 +238,24 @@ function RegisterFields({
   setClassPassword,
   howFoundOut,
   setHowFoundOut,
+  lang,
+  t,
 }: RegisterFieldsProps) {
+  const labelOption = (option: string) => optionLabel(option, lang);
+
   if (role === "student") {
     return (
       <div className="grid gap-4 md:grid-cols-2">
-        <Field label="Name" placeholder="Student name" value={name} onChange={setName} />
-        <Field label="Email" type="email" placeholder="student@example.com" value={email} onChange={setEmail} />
-        <Field label="Password" type="password" placeholder="Create a password" minLength={6} value={password} onChange={setPassword} />
-        <Field label="WeChat ID" placeholder="WeChat ID" value={wechatId} onChange={setWechatId} />
-        <SelectField label="Province" placeholder="Select province" options={provinces} value={province} onChange={setProvince} />
-        <SelectField label="City" placeholder="Select city" options={cities} value={city} onChange={setCity} />
-        <SelectField label="Grade" placeholder="Select grade" options={gradeOptions} value={grade} onChange={setGrade} />
-        <SelectField label="English Level" placeholder="Select level" options={englishLevels} value={englishLevel} onChange={setEnglishLevel} />
-        <Field label="Referrer" placeholder="Who referred you?" value={referrer} onChange={setReferrer} />
-        <SelectField label="Trial Teacher" placeholder="Select recruiting teacher" options={teachers} value={trialTeacher} onChange={setTrialTeacher} />
+        <Field label={t("auth.name")} placeholder={t("auth.studentName")} value={name} onChange={setName} />
+        <Field label={t("auth.email")} type="email" placeholder="student@example.com" value={email} onChange={setEmail} />
+        <Field label={t("auth.password")} type="password" placeholder={t("auth.createPassword")} minLength={6} value={password} onChange={setPassword} />
+        <Field label={t("auth.wechatId")} placeholder={t("auth.wechatId")} value={wechatId} onChange={setWechatId} />
+        <SelectField label={t("auth.province")} placeholder={t("auth.selectProvince")} options={provinces} value={province} onChange={setProvince} getOptionLabel={labelOption} />
+        <SelectField label={t("auth.city")} placeholder={t("auth.selectCity")} options={cities} value={city} onChange={setCity} getOptionLabel={labelOption} />
+        <SelectField label={t("auth.grade")} placeholder={t("auth.selectGrade")} options={gradeOptions} value={grade} onChange={setGrade} getOptionLabel={labelOption} />
+        <SelectField label={t("auth.englishLevel")} placeholder={t("auth.selectLevel")} options={englishLevels} value={englishLevel} onChange={setEnglishLevel} getOptionLabel={labelOption} />
+        <Field label={t("auth.referrer")} placeholder={t("auth.referrerPlaceholder")} value={referrer} onChange={setReferrer} />
+        <SelectField label={t("auth.trialTeacher")} placeholder={t("auth.selectRecruitingTeacher")} options={teachers} value={trialTeacher} onChange={setTrialTeacher} />
       </div>
     );
   }
@@ -259,31 +263,31 @@ function RegisterFields({
   if (role === "tutor") {
     return (
       <div className="grid gap-4 md:grid-cols-2">
-        <Field label="Name" placeholder="Tutor name" value={name} onChange={setName} />
-        <Field label="Email" type="email" placeholder="tutor@example.com" value={email} onChange={setEmail} />
-        <Field label="Password" type="password" placeholder="Create a password" minLength={6} value={password} onChange={setPassword} />
-        <Field label="WeChat ID" placeholder="WeChat ID" value={wechatId} onChange={setWechatId} />
-        <Field label="School" placeholder="School name" value={school} onChange={setSchool} />
-        <SelectField label="Grade" placeholder="Select your grade" options={gradeOptions} value={grade} onChange={setGrade} />
-        <SelectField label="Student Grade to Tutor" placeholder="Select target grade" options={tutorStudentGrades} value={gradesToTutor} onChange={setGradesToTutor} />
-        <Field label="Class Link" placeholder="Video class link" value={classLink} onChange={setClassLink} />
-        <Field label="Class Password" placeholder="Classroom password" value={classPassword} onChange={setClassPassword} />
-        <Field label="How did you find out about this?" placeholder="Referral, school, social media..." value={howFoundOut} onChange={setHowFoundOut} />
+        <Field label={t("auth.name")} placeholder={t("auth.tutorName")} value={name} onChange={setName} />
+        <Field label={t("auth.email")} type="email" placeholder="tutor@example.com" value={email} onChange={setEmail} />
+        <Field label={t("auth.password")} type="password" placeholder={t("auth.createPassword")} minLength={6} value={password} onChange={setPassword} />
+        <Field label={t("auth.wechatId")} placeholder={t("auth.wechatId")} value={wechatId} onChange={setWechatId} />
+        <Field label={t("auth.school")} placeholder={t("auth.schoolName")} value={school} onChange={setSchool} />
+        <SelectField label={t("auth.grade")} placeholder={t("auth.selectYourGrade")} options={gradeOptions} value={grade} onChange={setGrade} getOptionLabel={labelOption} />
+        <SelectField label={t("auth.studentGradeToTutor")} placeholder={t("auth.selectTargetGrade")} options={tutorStudentGrades} value={gradesToTutor} onChange={setGradesToTutor} getOptionLabel={labelOption} />
+        <Field label={t("auth.classLink")} type="url" placeholder={t("auth.videoClassLink")} value={classLink} onChange={setClassLink} />
+        <Field label={t("auth.classPassword")} placeholder={t("auth.classroomPassword")} value={classPassword} onChange={setClassPassword} />
+        <Field label={t("auth.howFoundOut")} placeholder={t("auth.howFoundOutPlaceholder")} value={howFoundOut} onChange={setHowFoundOut} />
       </div>
     );
   }
 
   return (
     <div className="grid gap-4 md:grid-cols-2">
-      <Field label="Name" placeholder="Administrator name" value={name} onChange={setName} />
-      <Field label="Email" type="email" placeholder="admin@example.com" value={email} onChange={setEmail} />
-      <Field label="Password" type="password" placeholder="Create a password" minLength={6} value={password} onChange={setPassword} />
-      <Field label="WeChat ID" placeholder="WeChat ID" value={wechatId} onChange={setWechatId} />
+      <Field label={t("auth.name")} placeholder={t("auth.administratorName")} value={name} onChange={setName} />
+      <Field label={t("auth.email")} type="email" placeholder="admin@example.com" value={email} onChange={setEmail} />
+      <Field label={t("auth.password")} type="password" placeholder={t("auth.createPassword")} minLength={6} value={password} onChange={setPassword} />
+      <Field label={t("auth.wechatId")} placeholder={t("auth.wechatId")} value={wechatId} onChange={setWechatId} />
     </div>
   );
 }
 
-export default function AuthPage() {
+function AuthPageContent() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -306,9 +310,10 @@ export default function AuthPage() {
 
   const [mode, setMode] = useState<Mode>("login");
   const [role, setRole] = useState<Role>("student");
+  const { lang, t } = useLanguage();
   const router = useRouter();
-  const titleRole = roleOptions.find((option) => option.id === role)?.label;
-  const visibleRoles = mode === "login" ? roleOptions : registerRoleOptions;
+  const titleRoleKey = roleOptions.find((option) => option.id === role)?.labelKey;
+  const titleRole = titleRoleKey ? t(titleRoleKey) : "";
 
   function handleModeChange(nextMode: Mode) {
     setMode(nextMode);
@@ -359,6 +364,8 @@ export default function AuthPage() {
           </div>
           <span className="hidden text-card-foreground sm:block">TutorFlow</span>
         </div>
+        <div className="flex-1" />
+        <LanguageSelect />
       </header>
 
       <section className="flex-1 overflow-y-auto p-4 sm:p-6">
@@ -366,10 +373,10 @@ export default function AuthPage() {
           <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
             <div>
               <h2 className="text-foreground">
-                {mode === "login" ? "Log in" : `${titleRole} Registration`}
+                {mode === "login" ? t("auth.loginTitle") : `${titleRole} ${t("auth.registration")}`}
               </h2>
               <p className="mt-2 text-sm text-muted-foreground">
-                {mode === "login" ? "Select your role and enter your account details." : "All fields are required."}
+                {mode === "login" ? t("auth.loginHelp") : t("auth.registerHelp")}
               </p>
             </div>
 
@@ -383,7 +390,7 @@ export default function AuthPage() {
                     mode === option ? "bg-card text-card-foreground shadow-sm" : "text-muted-foreground hover:text-card-foreground"
                   }`}
                 >
-                  {option}
+                  {option === "login" ? t("auth.login") : t("auth.register")}
                 </button>
               ))}
             </div>
@@ -450,7 +457,7 @@ export default function AuthPage() {
                 }
 
                 if (!userId) {
-                  setError("Could not create or load the auth user.");
+                  setError(t("auth.authUserError"));
                   return;
                 }
 
@@ -512,11 +519,12 @@ export default function AuthPage() {
               }
             }}
           >
-            <RoleTabs options={visibleRoles} role={role} setRole={setRole} />
+            {mode === "register" && <RoleTabs options={registerRoleOptions} role={role} setRole={setRole} t={t} />}
             <div className="rounded-2xl border border-border bg-card p-4 sm:p-5">
               {mode === "login" ? (
                 <LoginFields
-                  role={role}
+                  lang={lang}
+                  t={t}
                   email={email}
                   setEmail={setEmail}
                   password={password}
@@ -525,6 +533,8 @@ export default function AuthPage() {
               ) : (
                 <RegisterFields
                   role={role}
+                  lang={lang}
+                  t={t}
                   name={name}
                   setName={setName}
                   email={email}
@@ -567,11 +577,19 @@ export default function AuthPage() {
               type="submit"
               className="w-full rounded-xl bg-primary px-6 py-3 text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 sm:w-fit"
             >
-              {mode === "login" ? "Log in" : "Create account"}
+              {mode === "login" ? t("auth.login") : t("auth.createAccount")}
             </button>
           </form>
         </div>
       </section>
     </main>
+  );
+}
+
+export default function AuthPage() {
+  return (
+    <LanguageProvider>
+      <AuthPageContent />
+    </LanguageProvider>
   );
 }

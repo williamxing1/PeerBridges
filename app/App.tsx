@@ -8,6 +8,7 @@ import { StudentSchedulePage } from "./components/StudentSchedulePage";
 import { TutorSchedulePage } from "./components/TutorSchedulePage";
 import { VolunteerRecordPage } from "./components/VolunteerRecordPage";
 import { AdminDashboardPage } from "./components/AdminDashboardPage";
+import { LanguageProvider, LanguageSelect, optionLabel, useLanguage } from "./i18n";
 import { supabase } from "../lib/supabase/client";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as Tabs from "@radix-ui/react-tabs";
@@ -138,16 +139,11 @@ const COMPLETED_CLASSES = [
   },
 ];
 
-const LANGUAGES = [
-  { code: "en", label: "English" },
-  { code: "zh", label: "中文" },
-];
-
 const storedUserKey = "tutorflow-user";
 const provinces = ["Ontario", "British Columbia", "Alberta", "Quebec", "California", "New York"];
 const cities = ["Toronto", "Vancouver", "Calgary", "Montreal", "Los Angeles", "New York City"];
 const gradeOptions = ["Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6", "Grade 7", "Grade 8", "Grade 9", "Grade 10", "Grade 11", "Grade 12"];
-const englishLevels = ["Beginner", "Primary", "Intermediate"];
+const englishLevels = ["Beginner", "Intermediate", "Advanced"];
 const tutorStudentGrades = ["Elementary school", "Middle school", "High school"];
 
 type StoredUser = {
@@ -230,7 +226,9 @@ type UIClass = {
   id: string;
   name: string;
   student: string;
+  studentUid: string;
   teacher: string;
+  teacherUid: string;
   date: string;
   time: string;
   startsAt: Date;
@@ -281,6 +279,20 @@ function getClassDateTime(date: string, time: string) {
   return new Date(`${date}T${time}`);
 }
 
+function formatDateForQuery(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function formatTimeForQuery(date: Date) {
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const seconds = String(date.getSeconds()).padStart(2, "0");
+  return `${hours}:${minutes}:${seconds}`;
+}
+
 function formatClassDate(date: string) {
   return new Date(`${date}T00:00:00`).toLocaleDateString("en-US", {
     month: "short",
@@ -318,13 +330,15 @@ function toUIClass(
 ): UIClass {
   const startsAt = getClassDateTime(cls.lesson_date, cls.start_time);
   const endsAt = getClassDateTime(cls.lesson_date, cls.end_time);
-  const student = studentNames.get(cls.student_uid) ?? cls.student_uid;
+  const student = studentNames.get(cls.student_uid) ?? `Unknown student (${cls.student_uid.slice(0, 8)})`;
 
   return {
     id: cls.lesson_id,
     name: `Class with ${student}`,
     student,
+    studentUid: cls.student_uid,
     teacher: teacherName,
+    teacherUid: cls.teacher_uid,
     date: formatClassDate(cls.lesson_date),
     time: `${formatClassTime(cls.start_time)} - ${formatClassTime(cls.end_time)}`,
     startsAt,
@@ -353,7 +367,9 @@ function toStudentUIClass(
     id: cls.lesson_id,
     name: "Chinese Class",
     student: "",
+    studentUid: cls.student_uid,
     teacher,
+    teacherUid: cls.teacher_uid,
     date: formatClassDate(cls.lesson_date),
     time: `${formatClassTime(cls.start_time)} - ${formatClassTime(cls.end_time)}`,
     startsAt,
@@ -420,12 +436,13 @@ function SettingsSelect({
   onChange: (value: string) => void;
   options: string[];
 }) {
+  const { lang, t } = useLanguage();
   return (
     <label className="block">
       <span className="text-sm text-card-foreground">{label}</span>
       <Select.Root value={value} onValueChange={onChange}>
         <Select.Trigger className="mt-2 flex h-11 w-full items-center justify-between rounded-xl border border-border bg-background px-3.5 text-sm text-foreground outline-none transition data-[placeholder]:text-muted-foreground focus:border-primary/40 focus:bg-card">
-          <Select.Value placeholder={`Select ${label.toLowerCase()}`} />
+          <Select.Value placeholder={t("common.selectLabel", { label: label.toLowerCase() })} />
           <Select.Icon>
             <ChevronDown size={16} className="text-muted-foreground" />
           </Select.Icon>
@@ -439,7 +456,7 @@ function SettingsSelect({
                   value={option}
                   className="flex cursor-pointer items-center rounded-lg px-3 py-2 text-sm text-popover-foreground outline-none data-[highlighted]:bg-accent"
                 >
-                  <Select.ItemText>{option}</Select.ItemText>
+                  <Select.ItemText>{optionLabel(option, lang)}</Select.ItemText>
                 </Select.Item>
               ))}
             </Select.Viewport>
@@ -459,6 +476,7 @@ function AccountSettingsDialog({
   onOpenChange: (open: boolean) => void;
   fallbackUser: typeof STUDENT;
 }) {
+  const { t } = useLanguage();
   const router = useRouter();
   const [tab, setTab] = useState<"general" | "account">("general");
   const [profile, setProfile] = useState<SettingsProfile>({
@@ -501,7 +519,7 @@ function AccountSettingsDialog({
 
       if (authError || !uid) {
         if (!cancelled) {
-          setError(authError?.message ?? "No signed-in user found.");
+          setError(authError?.message ?? t("settings.noSignedInUser"));
           setLoading(false);
         }
         return;
@@ -655,7 +673,7 @@ function AccountSettingsDialog({
       name: profile.name,
       email: profile.email,
     }));
-    setMessage("Settings saved.");
+    setMessage(t("settings.saved"));
     setSaving(false);
   }
 
@@ -671,7 +689,7 @@ function AccountSettingsDialog({
       return;
     }
 
-    setMessage("Password reset email sent.");
+    setMessage(t("settings.resetSent"));
   }
 
   async function handleDeleteAccount() {
@@ -682,7 +700,7 @@ function AccountSettingsDialog({
 
     const { error: rpcError } = await supabase.rpc("delete_current_user");
     if (rpcError) {
-      setError("Account deletion requires a Supabase RPC named delete_current_user. " + rpcError.message);
+      setError(t("settings.deleteRpcRequired", { message: rpcError.message }));
       return;
     }
 
@@ -693,8 +711,8 @@ function AccountSettingsDialog({
   }
 
   const sidebarItems = [
-    { id: "general" as const, label: "General", icon: Settings },
-    { id: "account" as const, label: "Account", icon: User },
+    { id: "general" as const, label: t("settings.general"), icon: Settings },
+    { id: "account" as const, label: t("settings.account"), icon: User },
   ];
 
   return (
@@ -726,35 +744,35 @@ function AccountSettingsDialog({
           <section className="flex min-w-0 flex-1 flex-col overflow-hidden">
             <div className="border-b border-border px-8 py-6">
               <Dialog.Title className="text-3xl text-card-foreground">
-                {tab === "general" ? "General" : "Account"}
+                {tab === "general" ? t("settings.general") : t("settings.account")}
               </Dialog.Title>
             </div>
 
             <div className="flex-1 overflow-y-auto px-8 py-6">
               {loading ? (
-                <p className="text-sm text-muted-foreground">Loading settings...</p>
+                <p className="text-sm text-muted-foreground">{t("settings.loading")}</p>
               ) : tab === "general" ? (
                 <div className="grid gap-5 md:grid-cols-2">
-                  <SettingsField label="Name" value={profile.name} onChange={(value) => updateProfile("name", value)} />
-                  <SettingsField label="Email" type="email" value={profile.email} onChange={(value) => updateProfile("email", value)} />
-                  <SettingsField label="WeChat ID" value={profile.wechatId} onChange={(value) => updateProfile("wechatId", value)} />
+                  <SettingsField label={t("auth.name")} value={profile.name} onChange={(value) => updateProfile("name", value)} />
+                  <SettingsField label={t("auth.email")} type="email" value={profile.email} onChange={(value) => updateProfile("email", value)} />
+                  <SettingsField label={t("auth.wechatId")} value={profile.wechatId} onChange={(value) => updateProfile("wechatId", value)} />
 
                   {profile.role === "student" && (
                     <>
-                      <SettingsSelect label="Province" value={profile.province} onChange={(value) => updateProfile("province", value)} options={provinces} />
-                      <SettingsSelect label="City" value={profile.city} onChange={(value) => updateProfile("city", value)} options={cities} />
-                      <SettingsSelect label="Grade" value={profile.grade} onChange={(value) => updateProfile("grade", value)} options={gradeOptions} />
-                      <SettingsSelect label="English Level" value={profile.englishLevel} onChange={(value) => updateProfile("englishLevel", value)} options={englishLevels} />
+                      <SettingsSelect label={t("auth.province")} value={profile.province} onChange={(value) => updateProfile("province", value)} options={provinces} />
+                      <SettingsSelect label={t("auth.city")} value={profile.city} onChange={(value) => updateProfile("city", value)} options={cities} />
+                      <SettingsSelect label={t("auth.grade")} value={profile.grade} onChange={(value) => updateProfile("grade", value)} options={gradeOptions} />
+                      <SettingsSelect label={t("auth.englishLevel")} value={profile.englishLevel} onChange={(value) => updateProfile("englishLevel", value)} options={englishLevels} />
                     </>
                   )}
 
                   {profile.role === "tutor" && (
                     <>
-                      <SettingsField label="School" value={profile.school} onChange={(value) => updateProfile("school", value)} />
-                      <SettingsSelect label="Grade" value={profile.grade} onChange={(value) => updateProfile("grade", value)} options={gradeOptions} />
-                      <SettingsSelect label="Student Grade to Tutor" value={profile.gradesToTutor} onChange={(value) => updateProfile("gradesToTutor", value)} options={tutorStudentGrades} />
-                      <SettingsField label="Class Link" value={profile.classLink} onChange={(value) => updateProfile("classLink", value)} />
-                      <SettingsField label="Class Password" value={profile.meetingPassword} onChange={(value) => updateProfile("meetingPassword", value)} />
+                      <SettingsField label={t("auth.school")} value={profile.school} onChange={(value) => updateProfile("school", value)} />
+                      <SettingsSelect label={t("auth.grade")} value={profile.grade} onChange={(value) => updateProfile("grade", value)} options={gradeOptions} />
+                      <SettingsSelect label={t("auth.studentGradeToTutor")} value={profile.gradesToTutor} onChange={(value) => updateProfile("gradesToTutor", value)} options={tutorStudentGrades} />
+                      <SettingsField label={t("auth.classLink")} value={profile.classLink} onChange={(value) => updateProfile("classLink", value)} />
+                      <SettingsField label={t("auth.classPassword")} value={profile.meetingPassword} onChange={(value) => updateProfile("meetingPassword", value)} />
                     </>
                   )}
                 </div>
@@ -762,25 +780,25 @@ function AccountSettingsDialog({
                 <div className="divide-y divide-border border-y border-border">
                   <div className="flex items-center justify-between gap-4 py-7">
                     <div>
-                      <p className="text-lg text-card-foreground">Reset password</p>
-                      <p className="mt-1 text-sm text-muted-foreground">Send a password reset email to {profile.email}.</p>
+                      <p className="text-lg text-card-foreground">{t("settings.resetPassword")}</p>
+                      <p className="mt-1 text-sm text-muted-foreground">{t("settings.resetPasswordHelp", { email: profile.email })}</p>
                     </div>
                     <button
                       type="button"
                       onClick={handleResetPassword}
                       className="rounded-full border border-primary px-7 py-3 text-sm text-primary transition-colors hover:bg-primary/10"
                     >
-                      Reset
+                      {t("settings.reset")}
                     </button>
                   </div>
                   <div className="flex items-center justify-between gap-4 py-7">
-                    <p className="text-lg text-card-foreground">Delete account</p>
+                    <p className="text-lg text-card-foreground">{t("settings.deleteAccount")}</p>
                     <button
                       type="button"
                       onClick={handleDeleteAccount}
                       className="rounded-full border border-destructive px-7 py-3 text-sm text-destructive transition-colors hover:bg-destructive/10"
                     >
-                      Delete
+                      {t("settings.delete")}
                     </button>
                   </div>
                 </div>
@@ -795,7 +813,7 @@ function AccountSettingsDialog({
                   disabled={saving || loading}
                   className="rounded-xl bg-primary px-5 py-2.5 text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {saving ? "Saving..." : "Save"}
+                  {saving ? t("common.saving") : t("settings.save")}
                 </button>
               )}
               <div className="min-w-0 text-sm">
@@ -885,6 +903,7 @@ function ClassCard({
   completed,
   feedbackLabel = "View Teacher Feedback",
   feedbackPendingLabel = "Teacher feedback pending",
+  useEvaluationPage = false,
 }: {
   cls: {
     id: string | number;
@@ -900,7 +919,9 @@ function ClassCard({
   completed: boolean;
   feedbackLabel?: string;
   feedbackPendingLabel?: string;
+  useEvaluationPage?: boolean;
 }) {
+  const { t } = useLanguage();
   const [dialogOpen, setDialogOpen] = useState(false);
   const actionLabel =
     completed && "evaluationCompleted" in cls
@@ -936,10 +957,20 @@ function ClassCard({
         </div>
         {cls.meetingPassword && (
           <p className="text-xs text-muted-foreground">
-            {`Meeting password: ${cls.meetingPassword}`}
+            {t("dashboard.meetingPassword", { password: cls.meetingPassword })}
           </p>
         )}
-        {completed && (cls.evaluationCompleted || feedbackPendingLabel !== "Teacher feedback pending") && (
+        {completed && (cls.evaluationCompleted || feedbackPendingLabel !== t("dashboard.teacherFeedbackPending")) && (
+          useEvaluationPage ? (
+          <Link
+            href={`/evaluations/${cls.id}`}
+            className="flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 transition-colors cursor-pointer mt-1 w-fit"
+          >
+            <MessageSquare size={12} />
+            {actionLabel}
+            <ChevronRight size={12} />
+          </Link>
+          ) : (
           <button
             onClick={() => setDialogOpen(true)}
             className="flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 transition-colors cursor-pointer mt-1 w-fit"
@@ -948,8 +979,9 @@ function ClassCard({
             {actionLabel}
             <ChevronRight size={12} />
           </button>
+          )
         )}
-        {completed && !cls.evaluationCompleted && feedbackPendingLabel === "Teacher feedback pending" && (
+        {completed && !cls.evaluationCompleted && feedbackPendingLabel === t("dashboard.teacherFeedbackPending") && (
           <p className="mt-1 text-xs text-muted-foreground">{actionLabel}</p>
         )}
         {!completed && (
@@ -959,7 +991,7 @@ function ClassCard({
             disabled={!cls.classLink}
             className="mt-1 w-full text-center text-xs text-primary border border-primary/30 rounded-lg py-1.5 hover:bg-accent transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Join Session
+            {t("dashboard.joinSession")}
           </button>
         )}
       </div>
@@ -977,18 +1009,15 @@ function ClassCard({
 // ─── TOP NAV ─────────────────────────────────────────────────────────────────
 
 function TopNav({
-  lang,
-  setLang,
   user,
   onMenuClick,
 }: {
-  lang: string;
-  setLang: (l: string) => void;
   user: typeof STUDENT;
   onMenuClick: () => void;
 }) {
   const router = useRouter();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const { t } = useLanguage();
 
   async function handleSignOut() {
     await supabase.auth.signOut();
@@ -1003,7 +1032,7 @@ function TopNav({
         type="button"
         onClick={onMenuClick}
         className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-card-foreground md:hidden"
-        aria-label="Open navigation"
+        aria-label={t("common.openNavigation")}
       >
         <Menu size={18} />
       </button>
@@ -1018,30 +1047,7 @@ function TopNav({
 
       <div className="flex-1" />
 
-      {/* Language Select */}
-      <Select.Root value={lang} onValueChange={setLang}>
-        <Select.Trigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-card-foreground border border-border rounded-lg px-2.5 sm:px-3 py-1.5 bg-background hover:bg-accent transition-colors cursor-pointer outline-none">
-          <Select.Value />
-          <Select.Icon>
-            <ChevronDown size={14} />
-          </Select.Icon>
-        </Select.Trigger>
-        <Select.Portal>
-          <Select.Content className="bg-popover border border-border rounded-xl shadow-xl z-50 overflow-hidden">
-            <Select.Viewport className="p-1">
-              {LANGUAGES.map((l) => (
-                <Select.Item
-                  key={l.code}
-                  value={l.code}
-                  className="flex items-center gap-2 px-3 py-2 text-sm text-popover-foreground rounded-lg hover:bg-accent cursor-pointer outline-none data-[highlighted]:bg-accent"
-                >
-                  <Select.ItemText>{l.label}</Select.ItemText>
-                </Select.Item>
-              ))}
-            </Select.Viewport>
-          </Select.Content>
-        </Select.Portal>
-      </Select.Root>
+      <LanguageSelect />
 
       {/* Profile dropdown */}
       <DropdownMenu.Root>
@@ -1073,7 +1079,7 @@ function TopNav({
               className="flex items-center gap-2.5 px-3 py-2 text-sm text-popover-foreground rounded-lg hover:bg-accent cursor-pointer outline-none"
             >
               <Settings size={14} className="text-muted-foreground" />
-              {lang === "zh" ? "账户设置" : "Account Settings"}
+              {t("common.accountSettings")}
             </DropdownMenu.Item>
             <DropdownMenu.Separator className="my-1 h-px bg-border" />
             <DropdownMenu.Item
@@ -1081,7 +1087,7 @@ function TopNav({
               className="flex items-center gap-2.5 px-3 py-2 text-sm text-destructive rounded-lg hover:bg-destructive/10 cursor-pointer outline-none"
             >
               <LogOut size={14} />
-              {lang === "zh" ? "退出登录" : "Sign Out"}
+              {t("common.signOut")}
             </DropdownMenu.Item>
           </DropdownMenu.Content>
         </DropdownMenu.Portal>
@@ -1096,7 +1102,6 @@ function TopNav({
 
 function Sidebar({
   active,
-  lang,
   dashboardHref,
   scheduleHref,
   recordHref,
@@ -1104,27 +1109,27 @@ function Sidebar({
   onClose,
 }: {
   active: string;
-  lang: string;
   dashboardHref: string;
   scheduleHref?: string | null;
   recordHref?: string;
   open: boolean;
   onClose: () => void;
 }) {
+  const { t } = useLanguage();
   const items = [
-    { id: "dashboard", href: dashboardHref, icon: LayoutDashboard, label: lang === "zh" ? "仪表板" : "Dashboard" },
+    { id: "dashboard", href: dashboardHref, icon: LayoutDashboard, label: t("common.dashboard") },
     ...(scheduleHref
-      ? [{ id: "schedule", href: scheduleHref, icon: CalendarDays, label: lang === "zh" ? "课程表" : "Schedule" }]
+      ? [{ id: "schedule", href: scheduleHref, icon: CalendarDays, label: t("common.schedule") }]
       : []),
     ...(recordHref
-      ? [{ id: "record", href: recordHref, icon: FileText, label: lang === "zh" ? "志愿记录" : "Volunteer Record" }]
+      ? [{ id: "record", href: recordHref, icon: FileText, label: t("common.volunteerRecord") }]
       : []),
   ];
   return (
     <>
       <button
         type="button"
-        aria-label="Close navigation"
+        aria-label={t("common.closeNavigation")}
         onClick={onClose}
         className={`fixed inset-0 z-30 bg-black/25 transition-opacity md:hidden ${
           open ? "opacity-100" : "pointer-events-none opacity-0"
@@ -1146,7 +1151,7 @@ function Sidebar({
             type="button"
             onClick={onClose}
             className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-            aria-label="Close navigation"
+            aria-label={t("common.closeNavigation")}
           >
             <X size={17} />
           </button>
@@ -1182,20 +1187,21 @@ function FeedbackCard({
   feedback: StudentFeedback | null;
   loading: boolean;
 }) {
+  const { t } = useLanguage();
   return (
     <div className="bg-card border border-border rounded-2xl p-5 flex flex-col gap-4 h-full">
       <div className="flex items-center justify-between">
-        <h3 className="text-card-foreground">{lang === "zh" ? "上次课程反馈" : "Last Class Feedback"}</h3>
+        <h3 className="text-card-foreground">{t("dashboard.lastFeedback")}</h3>
         {feedback && <span className="text-xs text-muted-foreground">{feedback.date}</span>}
       </div>
 
       {loading ? (
         <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-border bg-background px-4 py-10 text-sm text-muted-foreground">
-          {lang === "zh" ? "正在加载反馈..." : "Loading feedback..."}
+          {t("dashboard.loadingFeedback")}
         </div>
       ) : !feedback ? (
         <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-border bg-background px-4 py-10 text-sm text-muted-foreground">
-          {lang === "zh" ? "暂无课程反馈" : "No teacher feedback yet."}
+          {t("dashboard.noFeedback")}
         </div>
       ) : (
         <>
@@ -1211,7 +1217,7 @@ function FeedbackCard({
           <div className="border-t border-border pt-4 flex items-center justify-between">
             <div>
               <p className="text-xs text-muted-foreground mb-1.5">
-                {lang === "zh" ? "本次课程评分" : "Session rating"}
+                {t("dashboard.sessionRating")}
               </p>
               <StarRating stars={feedback.stars} size={22} />
             </div>
@@ -1234,22 +1240,23 @@ function AssignmentsCard({
   assignments: UIAssignment[];
   loading: boolean;
 }) {
+  const { t } = useLanguage();
   return (
     <div className="bg-card border border-border rounded-2xl p-5 flex flex-col gap-4 h-full">
       <div className="flex items-center justify-between">
-        <h3 className="text-card-foreground">{lang === "zh" ? "作业" : "Assignments"}</h3>
+        <h3 className="text-card-foreground">{t("dashboard.assignments")}</h3>
         <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
-          {assignments.length} {lang === "zh" ? "项" : "pending"}
+          {assignments.length} {t("dashboard.pending")}
         </span>
       </div>
       <div className="flex flex-col gap-3 flex-1">
         {loading ? (
           <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-border bg-background px-4 py-10 text-sm text-muted-foreground">
-            {lang === "zh" ? "正在加载作业..." : "Loading assignments..."}
+            {t("dashboard.loadingAssignments")}
           </div>
         ) : assignments.length === 0 ? (
           <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-border bg-background px-4 py-10 text-sm text-muted-foreground">
-            {lang === "zh" ? "暂无待完成作业" : "No upcoming assignments."}
+            {t("dashboard.noAssignments")}
           </div>
         ) : assignments.map((a) => (
           <div
@@ -1262,7 +1269,7 @@ function AssignmentsCard({
               <p className="text-sm text-card-foreground">{a.name}</p>
               {a.dueSoon && (
                 <span className="text-xs text-amber-600 bg-amber-100 px-2 py-0.5 rounded-full shrink-0">
-                  {lang === "zh" ? "紧急" : "Due soon"}
+                  {t("dashboard.dueSoon")}
                 </span>
               )}
             </div>
@@ -1287,24 +1294,25 @@ function TutorStatsCard({
   lang: string;
   data: TutorDashboardData;
 }) {
+  const { t } = useLanguage();
   const totalHours = data.stats.totalMinutes / 60;
   const stats = [
     {
-      label: lang === "zh" ? "已授课程" : "Total classes taught",
+      label: t("dashboard.totalClassesTaught"),
       value: data.loading ? "..." : String(data.stats.totalClasses),
       icon: BookOpen,
       tone: "bg-violet-50",
       iconTone: "bg-primary text-primary-foreground",
     },
     {
-      label: lang === "zh" ? "学生人数" : "Students taught",
+      label: t("dashboard.studentsTaught"),
       value: data.loading ? "..." : String(data.stats.studentsTaught),
       icon: Users,
       tone: "bg-emerald-50",
       iconTone: "bg-emerald-500 text-white",
     },
     {
-      label: lang === "zh" ? "教学时长" : "Total hours spent",
+      label: t("dashboard.totalHoursSpent"),
       value: data.loading ? "..." : `${Number.isInteger(totalHours) ? totalHours : totalHours.toFixed(1)}h`,
       icon: Clock,
       tone: "bg-sky-50",
@@ -1315,9 +1323,9 @@ function TutorStatsCard({
   return (
     <div className="bg-card border border-border rounded-2xl p-5 flex flex-col gap-4 h-full">
       <div>
-        <h3 className="text-card-foreground">{lang === "zh" ? "教学统计" : "Teaching Stats"}</h3>
+        <h3 className="text-card-foreground">{t("dashboard.teachingStats")}</h3>
         <p className="text-sm text-muted-foreground mt-0.5">
-          {lang === "zh" ? "你的教学概览。" : "A quick snapshot of your tutoring activity."}
+          {t("dashboard.teachingStatsHelp")}
         </p>
       </div>
       <div className="grid grid-cols-1 gap-3 flex-1 sm:grid-cols-2">
@@ -1361,33 +1369,24 @@ function PendingEvaluationsCard({
   evaluations: UIClass[];
   loading: boolean;
 }) {
-  const [activeEvaluation, setActiveEvaluation] = useState<UIClass | null>(null);
-  const [rating, setRating] = useState(0);
-  const [feedback, setFeedback] = useState("");
-
-  function closeDialog() {
-    setActiveEvaluation(null);
-    setRating(0);
-    setFeedback("");
-  }
+  const { t } = useLanguage();
 
   return (
-    <>
-      <div className="bg-card border border-border rounded-2xl p-5 flex flex-col gap-4 h-full">
+    <div className="bg-card border border-border rounded-2xl p-5 flex flex-col gap-4 h-full">
         <div className="flex items-center justify-between">
-          <h3 className="text-card-foreground">{lang === "zh" ? "待完成评价" : "Pending Evaluations"}</h3>
+          <h3 className="text-card-foreground">{t("dashboard.pendingEvaluations")}</h3>
           <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
-            {evaluations.length} {lang === "zh" ? "项" : "pending"}
+            {evaluations.length} {t("dashboard.pending")}
           </span>
         </div>
         <div className="flex flex-col gap-3 flex-1">
           {loading ? (
             <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-border bg-background px-4 py-10 text-sm text-muted-foreground">
-              {lang === "zh" ? "正在加载..." : "Loading pending evaluations..."}
+              {t("dashboard.loadingPendingEvaluations")}
             </div>
           ) : evaluations.length === 0 ? (
             <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-border bg-background px-4 py-10 text-sm text-muted-foreground">
-              {lang === "zh" ? "暂无待完成评价" : "Nothing pending right now."}
+              {t("dashboard.nothingPending")}
             </div>
           ) : evaluations.map((evaluation) => (
             <div
@@ -1402,109 +1401,19 @@ function PendingEvaluationsCard({
                 </div>
               </div>
               <div className="flex items-center justify-between gap-3">
-                <p className="text-xs text-muted-foreground">Ready to complete</p>
-                <button
-                  onClick={() => setActiveEvaluation(evaluation)}
+                <p className="text-xs text-muted-foreground">{t("dashboard.readyToComplete")}</p>
+                <Link
+                  href={`/evaluations/${evaluation.id}`}
                   className="shrink-0 flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90 transition-colors"
                 >
                   <FileText size={12} />
-                  {lang === "zh" ? "填写" : "Complete"}
-                </button>
+                  {t("dashboard.complete")}
+                </Link>
               </div>
             </div>
           ))}
         </div>
       </div>
-
-      <Dialog.Root open={activeEvaluation !== null} onOpenChange={(open) => !open && closeDialog()}>
-        <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm" />
-          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-card p-5 shadow-2xl sm:p-6">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <Dialog.Title className="text-card-foreground">
-                  {lang === "zh" ? "完成评价" : "Complete Evaluation"}
-                </Dialog.Title>
-	                {activeEvaluation && (
-	                  <Dialog.Description className="mt-1 text-sm text-muted-foreground">
-	                    {activeEvaluation.student} · {activeEvaluation.date} · {activeEvaluation.time}
-	                  </Dialog.Description>
-	                )}
-              </div>
-              <button
-                onClick={closeDialog}
-                className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted"
-              >
-                <X size={16} />
-              </button>
-            </div>
-
-            <form
-              className="mt-5 flex flex-col gap-4"
-              onSubmit={(event) => {
-                event.preventDefault();
-                closeDialog();
-              }}
-            >
-              <div>
-                <p className="text-sm text-card-foreground">
-                  {lang === "zh" ? "评分" : "Star rating"}
-                </p>
-                <div className="mt-2 flex gap-1">
-                  {Array.from({ length: 5 }).map((_, index) => {
-                    const value = index + 1;
-                    return (
-                      <button
-                        key={value}
-                        type="button"
-                        onClick={() => setRating(value)}
-                        className="rounded-lg p-1 transition-colors hover:bg-accent"
-                        aria-label={`${value} star${value === 1 ? "" : "s"}`}
-                      >
-                        <Star
-                          size={28}
-                          className={
-                            value <= rating
-                              ? "fill-amber-400 text-amber-400"
-                              : "fill-gray-200 text-gray-200"
-                          }
-                        />
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <label className="block">
-                <span className="text-sm text-card-foreground">
-                  {lang === "zh" ? "文字反馈" : "Text feedback"}
-                </span>
-                <textarea
-                  required
-                  value={feedback}
-                  onChange={(event) => setFeedback(event.target.value)}
-                  rows={5}
-                  placeholder={
-                    lang === "zh"
-                      ? "写下学生本节课的表现、作业或下一步建议..."
-                      : "Write feedback, lesson notes, homework, or next steps..."
-                  }
-                  className="mt-2 w-full resize-none rounded-xl border border-border bg-background px-3.5 py-3 text-sm text-card-foreground outline-none transition placeholder:text-muted-foreground/70 focus:border-primary/40 focus:bg-card"
-                />
-              </label>
-
-              <button
-                type="submit"
-                disabled={rating === 0}
-                className="w-full rounded-xl bg-primary px-5 py-3 text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50 sm:w-fit"
-              >
-                {lang === "zh" ? "提交评价" : "Submit Evaluation"}
-              </button>
-            </form>
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
-    </>
   );
 }
 
@@ -1524,12 +1433,13 @@ function UpcomingClassHero({
   };
   lang: string;
 }) {
+  const { t } = useLanguage();
   return (
     <div className="bg-gradient-to-br from-primary/10 via-accent to-secondary border border-primary/20 rounded-2xl p-6 flex flex-col sm:flex-row gap-6 items-start sm:items-center">
       <div className="flex-1 flex flex-col gap-4">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs text-primary bg-primary/10 px-2.5 py-1 rounded-full">
-            {lang === "zh" ? "即将开始" : "Up next"}
+            {t("dashboard.upNext")}
           </span>
         </div>
         <div>
@@ -1539,14 +1449,14 @@ function UpcomingClassHero({
             <span className="flex items-center gap-1.5"><Clock size={14} />{cls.time}</span>
           </div>
           {cls.meetingPassword && (
-            <p className="mt-2 text-xs text-muted-foreground">Meeting password: {cls.meetingPassword}</p>
+            <p className="mt-2 text-xs text-muted-foreground">{t("dashboard.meetingPassword", { password: cls.meetingPassword })}</p>
           )}
         </div>
         <div className="flex items-center gap-3">
           <BlankAvatar size={36} />
           <div>
             <p className="text-sm text-card-foreground">{cls.teacher}</p>
-            <p className="text-xs text-muted-foreground">{lang === "zh" ? "您的老师" : "Your tutor"}</p>
+            <p className="text-xs text-muted-foreground">{t("dashboard.yourTutor")}</p>
           </div>
         </div>
       </div>
@@ -1556,7 +1466,7 @@ function UpcomingClassHero({
         disabled={!cls.classLink}
         className="w-full shrink-0 bg-primary text-primary-foreground px-6 py-3 rounded-xl text-sm hover:bg-primary/90 transition-colors cursor-pointer shadow-sm disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
       >
-        {lang === "zh" ? "加入课堂" : "Join Session"}
+        {t("dashboard.joinSession")}
       </button>
     </div>
   );
@@ -1566,11 +1476,12 @@ function UpcomingClassHero({
 
 function ClassesCard({
   lang,
-  feedbackLabel = "View Teacher Feedback",
-  feedbackPendingLabel = "Teacher feedback pending",
+  feedbackLabel,
+  feedbackPendingLabel,
   upcomingClasses = SCHEDULED_CLASSES,
   completedClasses = COMPLETED_CLASSES,
   loading = false,
+  useEvaluationPage = false,
 }: {
   lang: string;
   feedbackLabel?: string;
@@ -1594,15 +1505,19 @@ function ClassesCard({
     feedback?: typeof LAST_FEEDBACK;
   }>;
   loading?: boolean;
+  useEvaluationPage?: boolean;
 }) {
+  const { t } = useLanguage();
+  const resolvedFeedbackLabel = feedbackLabel ?? t("dashboard.viewTeacherFeedback");
+  const resolvedFeedbackPendingLabel = feedbackPendingLabel ?? t("dashboard.teacherFeedbackPending");
   return (
     <div className="bg-card border border-border rounded-2xl p-5 flex flex-col gap-4">
-      <h3 className="text-card-foreground">{lang === "zh" ? "课程" : "Classes"}</h3>
+      <h3 className="text-card-foreground">{t("dashboard.classes")}</h3>
       <Tabs.Root defaultValue="scheduled">
         <Tabs.List className="flex gap-1 bg-muted p-1 rounded-xl w-fit mb-4">
           {[
-            { value: "scheduled", label: lang === "zh" ? "即将到来" : "Upcoming" },
-            { value: "completed", label: lang === "zh" ? "已完成" : "Completed" },
+            { value: "scheduled", label: t("dashboard.upcoming") },
+            { value: "completed", label: t("dashboard.completed") },
           ].map(({ value, label }) => (
             <Tabs.Trigger
               key={value}
@@ -1617,12 +1532,12 @@ function ClassesCard({
           {loading ? (
             <div className="flex flex-col items-center justify-center py-12 text-muted-foreground gap-2">
               <CalendarDays size={32} className="opacity-30" />
-              <p className="text-sm">{lang === "zh" ? "正在加载课程..." : "Loading classes..."}</p>
+              <p className="text-sm">{t("dashboard.loadingClasses")}</p>
             </div>
           ) : upcomingClasses.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-muted-foreground gap-2">
               <CalendarDays size={32} className="opacity-30" />
-              <p className="text-sm">{lang === "zh" ? "暂无即将到来的课程" : "No upcoming classes scheduled"}</p>
+              <p className="text-sm">{t("dashboard.noUpcomingClasses")}</p>
             </div>
           ) : (
             <div className="flex flex-col gap-3">
@@ -1640,17 +1555,17 @@ function ClassesCard({
           {loading ? (
             <div className="flex flex-col items-center justify-center py-12 text-muted-foreground gap-2">
               <CheckCircle2 size={32} className="opacity-30" />
-              <p className="text-sm">{lang === "zh" ? "正在加载课程..." : "Loading classes..."}</p>
+              <p className="text-sm">{t("dashboard.loadingClasses")}</p>
             </div>
           ) : completedClasses.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-muted-foreground gap-2">
               <CheckCircle2 size={32} className="opacity-30" />
-              <p className="text-sm">{lang === "zh" ? "暂无已完成课程" : "No completed classes yet."}</p>
+              <p className="text-sm">{t("dashboard.noCompletedClasses")}</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {completedClasses.map((cls) => (
-                <ClassCard key={cls.id} cls={cls} completed={true} feedbackLabel={feedbackLabel} feedbackPendingLabel={feedbackPendingLabel} />
+                <ClassCard key={cls.id} cls={cls} completed={true} feedbackLabel={resolvedFeedbackLabel} feedbackPendingLabel={resolvedFeedbackPendingLabel} useEvaluationPage={useEvaluationPage} />
               ))}
             </div>
           )}
@@ -1663,6 +1578,7 @@ function ClassesCard({
 // ─── DASHBOARD PAGE ───────────────────────────────────────────────────────────
 
 export function StudentDashboardPage({ lang }: { lang: string }) {
+  const { t } = useLanguage();
   const [studentData, setStudentData] = useState<StudentDashboardData>(emptyStudentDashboardData);
   const [storedUser, setStoredUser] = useState<StoredUser | null>(null);
   const studentName = storedUser?.name || STUDENT.name;
@@ -1686,7 +1602,7 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
           setStudentData({
             ...emptyStudentDashboardData,
             loading: false,
-            error: "No student uid available.",
+            error: t("common.noStudentUid"),
           });
         }
         return;
@@ -1840,10 +1756,10 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-foreground">
-            {lang === "zh" ? `你好，${studentName.split(" ")[0]}！` : `Hello, ${studentName.split(" ")[0]}!`}
+            {t("dashboard.hello", { name: studentName.split(" ")[0] })}
           </h2>
           <p className="text-sm text-muted-foreground mt-0.5">
-            {lang === "zh" ? "这是你今天的学习概览。" : "Here's your learning overview for today."}
+            {t("dashboard.studentOverview")}
           </p>
         </div>
       </div>
@@ -1872,8 +1788,10 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
 }
 
 export function TutorDashboardPage({ lang }: { lang: string }) {
+  const { t } = useLanguage();
   const [dashboardData, setDashboardData] = useState<TutorDashboardData>(emptyTutorDashboardData);
   const [storedUser, setStoredUser] = useState<StoredUser | null>(null);
+  const [currentTutorUid, setCurrentTutorUid] = useState("");
   const tutorName = storedUser?.name || TUTOR.name;
 
   useEffect(() => {
@@ -1889,39 +1807,97 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
 
       const { data: authData } = await supabase.auth.getUser();
       const tutorUid = authData.user?.id ?? stored?.uid;
+      if (!cancelled) {
+        setCurrentTutorUid(tutorUid ?? "");
+      }
 
       if (!tutorUid) {
         if (!cancelled) {
           setDashboardData({
             ...emptyTutorDashboardData,
             loading: false,
-            error: "No tutor uid available.",
+            error: t("common.noTutorUid"),
           });
         }
         return;
       }
 
-      const { data: classRows, error } = await supabase
-        .from("classes")
-        .select("lesson_id, student_uid, teacher_uid, lesson_date, start_time, end_time, evaluation_completed")
-        .eq("teacher_uid", tutorUid)
-        .order("lesson_date", { ascending: true })
-        .order("start_time", { ascending: true });
+      const now = new Date();
+      const todayDate = formatDateForQuery(now);
+      const currentTime = formatTimeForQuery(now);
+      const classColumns = "lesson_id, student_uid, teacher_uid, lesson_date, start_time, end_time, evaluation_completed";
 
-      if (error) {
+      const { data: allClassRowsData, error: allClassRowsError } = await supabase
+        .from("classes")
+        .select("*");
+      console.log("All classes query result", {
+        error: allClassRowsError,
+        rows: allClassRowsData ?? [],
+      });
+
+      const [pastCompletedResult, todayCompletedResult] = await Promise.all([
+        supabase
+          .from("classes")
+          .select(classColumns)
+          .eq("teacher_uid", tutorUid)
+          .lt("lesson_date", todayDate)
+          .order("lesson_date", { ascending: true })
+          .order("start_time", { ascending: true }),
+        supabase
+          .from("classes")
+          .select(classColumns)
+          .eq("teacher_uid", tutorUid)
+          .eq("lesson_date", todayDate)
+          .lt("end_time", currentTime)
+          .order("lesson_date", { ascending: true })
+          .order("start_time", { ascending: true }),
+      ]);
+
+      const completedClassesError = pastCompletedResult.error ?? todayCompletedResult.error;
+      if (completedClassesError) {
         if (!cancelled) {
           setDashboardData({
             ...emptyTutorDashboardData,
             loading: false,
-            error: error.message,
+            error: completedClassesError.message,
           });
         }
         return;
       }
 
-      const classes = (classRows ?? []) as ClassRow[];
-      const now = new Date();
-      const completedClassRows = classes.filter((cls) => getClassDateTime(cls.lesson_date, cls.end_time) < now);
+      const { data: upcomingClassRowsData, error: upcomingClassesError } = await supabase
+        .from("classes")
+        .select(classColumns)
+        .eq("teacher_uid", tutorUid)
+        .or(`lesson_date.gt.${todayDate},and(lesson_date.eq.${todayDate},start_time.gt.${currentTime})`)
+        .order("lesson_date", { ascending: true })
+        .order("start_time", { ascending: true });
+
+      if (upcomingClassesError) {
+        if (!cancelled) {
+          setDashboardData({
+            ...emptyTutorDashboardData,
+            loading: false,
+            error: upcomingClassesError.message,
+          });
+        }
+        return;
+      }
+
+      const completedClassRows = [
+        ...((pastCompletedResult.data ?? []) as ClassRow[]),
+        ...((todayCompletedResult.data ?? []) as ClassRow[]),
+      ];
+      console.log("Tutor completed classes query result", {
+        tutorUid,
+        todayDate,
+        currentTime,
+        pastCompletedRows: pastCompletedResult.data ?? [],
+        todayCompletedRows: todayCompletedResult.data ?? [],
+        completedClassRows,
+      });
+      const upcomingClassRows = (upcomingClassRowsData ?? []) as ClassRow[];
+      const classes = [...completedClassRows, ...upcomingClassRows];
       const studentUids = Array.from(new Set(classes.map((cls) => cls.student_uid)));
       const completedStudentUids = Array.from(new Set(completedClassRows.map((cls) => cls.student_uid)));
       const studentNames = new Map<string, string>();
@@ -1968,7 +1944,7 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
         .from("tutor_profiles")
         .select("class_link, meeting_password")
         .eq("uid", tutorUid)
-        .single();
+        .maybeSingle();
       const meetingDetails = tutorDetails
         ? {
             classLink: tutorDetails.class_link,
@@ -1976,7 +1952,8 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
           }
         : undefined;
 
-      const uiClasses = classes.map((cls) => toUIClass(cls, studentNames, tutorName, meetingDetails));
+      const completedUiClasses = completedClassRows.map((cls) => toUIClass(cls, studentNames, tutorName, meetingDetails));
+      const upcomingUiClasses = upcomingClassRows.map((cls) => toUIClass(cls, studentNames, tutorName, meetingDetails));
       const byStartTime = (a: UIClass, b: UIClass) => a.startsAt.getTime() - b.startsAt.getTime();
       const totalVolunteerMinutes = ((volunteerRecords ?? []) as VolunteerRecordRow[]).reduce(
         (total, record) => total + record.minutes,
@@ -1992,15 +1969,11 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
             studentsTaught: completedStudentUids.length,
             totalMinutes: totalVolunteerMinutes,
           },
-          pendingEvaluations: uiClasses
-            .filter((cls) => cls.endsAt < now && !cls.evaluationCompleted)
+          pendingEvaluations: completedUiClasses
+            .filter((cls) => !cls.evaluationCompleted)
             .sort(byStartTime),
-          upcomingClasses: uiClasses
-            .filter((cls) => cls.startsAt > now)
-            .sort(byStartTime),
-          completedClasses: uiClasses
-            .filter((cls) => cls.endsAt < now)
-            .sort(byStartTime),
+          upcomingClasses: upcomingUiClasses.sort(byStartTime),
+          completedClasses: completedUiClasses.sort(byStartTime),
         });
       }
     }
@@ -2017,11 +1990,16 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-foreground">
-            {lang === "zh" ? `你好，${tutorName.split(" ")[0]}！` : `Hello, ${tutorName.split(" ")[0]}!`}
+            {t("dashboard.hello", { name: tutorName.split(" ")[0] })}
           </h2>
           <p className="text-sm text-muted-foreground mt-0.5">
-            {lang === "zh" ? "这是你今天的教学概览。" : "Here's your teaching overview for today."}
+            {t("dashboard.tutorOverview")}
           </p>
+          {currentTutorUid && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t("common.tutorUid", { uid: currentTutorUid })}
+            </p>
+          )}
         </div>
       </div>
 
@@ -2042,11 +2020,12 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
 
       <ClassesCard
         lang={lang}
-        feedbackLabel={lang === "zh" ? "查看评价" : "View Evaluation"}
-        feedbackPendingLabel={lang === "zh" ? "填写评价" : "Write Evaluation"}
+        feedbackLabel={t("dashboard.viewEvaluation")}
+        feedbackPendingLabel={t("dashboard.writeEvaluation")}
         upcomingClasses={dashboardData.upcomingClasses}
         completedClasses={dashboardData.completedClasses}
         loading={dashboardData.loading}
+        useEvaluationPage
       />
     </div>
   );
@@ -2069,7 +2048,37 @@ export function AppShell({
   scheduleHref?: string | null;
   recordHref?: string;
 }) {
-  const [lang, setLang] = useState("en");
+  return (
+    <LanguageProvider>
+      <AppShellContent
+        activePage={activePage}
+        user={user}
+        dashboardHref={dashboardHref}
+        scheduleHref={scheduleHref}
+        recordHref={recordHref}
+      >
+        {children}
+      </AppShellContent>
+    </LanguageProvider>
+  );
+}
+
+function AppShellContent({
+  activePage,
+  children,
+  user,
+  dashboardHref,
+  scheduleHref,
+  recordHref,
+}: {
+  activePage: "dashboard" | "schedule" | "record";
+  children: (lang: string) => ReactNode;
+  user: typeof STUDENT;
+  dashboardHref: string;
+  scheduleHref?: string | null;
+  recordHref?: string;
+}) {
+  const { lang } = useLanguage();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [storedUser, setStoredUser] = useState<StoredUser | null>(null);
   const navUser = {
@@ -2084,11 +2093,10 @@ export function AppShell({
 
   return (
     <div className="flex min-h-screen flex-col bg-background md:h-screen md:overflow-hidden">
-      <TopNav lang={lang} setLang={setLang} user={navUser} onMenuClick={() => setSidebarOpen(true)} />
+      <TopNav user={navUser} onMenuClick={() => setSidebarOpen(true)} />
       <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
         <Sidebar
           active={activePage}
-          lang={lang}
           dashboardHref={dashboardHref}
           scheduleHref={scheduleHref}
           recordHref={recordHref}

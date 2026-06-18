@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as Select from "@radix-ui/react-select";
 import { BookOpen, CalendarDays, ChevronDown, Clock, GraduationCap, Users, type LucideIcon } from "lucide-react";
 import { supabase } from "../../lib/supabase/client";
+import { useLanguage, type TranslationKey } from "../i18n";
 
 type PersonType = "student" | "tutor";
 
@@ -152,6 +153,7 @@ function CalendarInput({
   value: string;
   onChange: (value: string) => void;
 }) {
+  const { lang, t } = useLanguage();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const visibleDate = parseDate(value);
@@ -191,20 +193,20 @@ function CalendarInput({
         onClick={() => setOpen((current) => !current)}
         className="mt-2 flex h-11 w-full items-center justify-between rounded-xl border border-border bg-background px-3.5 text-sm text-card-foreground outline-none transition hover:border-primary/40"
       >
-        {formatDateLabel(value)}
+        {parseDate(value).toLocaleDateString(lang === "zh" ? "zh-CN" : "en-US", { month: "short", day: "numeric", year: "numeric" })}
         <CalendarDays size={15} className="text-muted-foreground" />
       </button>
       {open && (
         <div className="absolute left-0 z-40 mt-2 w-[min(18rem,calc(100vw-2rem))] rounded-xl border border-border bg-popover p-3 shadow-xl">
           <div className="mb-3 flex items-center justify-between">
             <button type="button" onClick={() => updateMonth(-1)} className="rounded-lg px-2 py-1 text-sm hover:bg-accent">
-              Prev
+              {t("common.prev")}
             </button>
             <p className="text-sm text-popover-foreground">
-              {visibleDate.toLocaleDateString("en-US", { month: "long", year: "numeric" })}
+              {visibleDate.toLocaleDateString(lang === "zh" ? "zh-CN" : "en-US", { month: "long", year: "numeric" })}
             </p>
             <button type="button" onClick={() => updateMonth(1)} className="rounded-lg px-2 py-1 text-sm hover:bg-accent">
-              Next
+              {t("common.next")}
             </button>
           </div>
           <div className="grid grid-cols-7 gap-1 text-center text-xs text-muted-foreground">
@@ -309,10 +311,11 @@ function SelectPerson({
   onChange: (value: string) => void;
   options: PersonOption[];
 }) {
+  const { t } = useLanguage();
   return (
     <Select.Root value={value} onValueChange={onChange}>
       <Select.Trigger className="flex h-11 w-full items-center justify-between rounded-xl border border-border bg-background px-3.5 text-sm text-card-foreground outline-none transition data-[placeholder]:text-muted-foreground hover:border-primary/40">
-        <Select.Value placeholder={`Select ${type}`} />
+        <Select.Value placeholder={t("admin.selectPerson", { type: t(type === "student" ? "common.student" : "common.tutor") })} />
         <Select.Icon>
           <ChevronDown size={15} className="text-muted-foreground" />
         </Select.Icon>
@@ -337,6 +340,7 @@ function SelectPerson({
 }
 
 export function AdminDashboardPage({ lang }: { lang: string }) {
+  const { t } = useLanguage();
   const [startDate, setStartDate] = useState(ALL_TIME_START);
   const [endDate, setEndDate] = useState(ALL_TIME_END);
   const [personStart, setPersonStart] = useState(ALL_TIME_START);
@@ -351,7 +355,8 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const interval = intervalLabel(startDate, endDate).toLowerCase();
+  const intervalKey = `admin.interval.${intervalLabel(startDate, endDate).toLowerCase()}` as TranslationKey;
+  const interval = t(intervalKey);
   const now = new Date();
   const studentProfiles = profiles.filter((profile) => studentUids.includes(profile.uid));
   const tutorProfiles = profiles.filter((profile) => tutorUids.includes(profile.uid));
@@ -390,12 +395,12 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
   const personStats =
     personType === "student"
       ? [
-          { label: "Classes attended", value: String(personClasses.length) },
-          { label: "Hours spent learning", value: hoursLabel(personClasses.reduce((total, cls) => total + classMinutes(cls), 0)) },
+          { label: t("admin.classesAttended"), value: String(personClasses.length) },
+          { label: t("admin.hoursSpentLearning"), value: hoursLabel(personClasses.reduce((total, cls) => total + classMinutes(cls), 0)) },
         ]
       : [
-          { label: "Students tutored", value: String(new Set(personClasses.map((cls) => cls.student_uid)).size) },
-          { label: "Total hours spent", value: hoursLabel(personVolunteerMinutes) },
+          { label: t("admin.studentsTutored"), value: String(new Set(personClasses.map((cls) => cls.student_uid)).size) },
+          { label: t("dashboard.totalHoursSpent"), value: hoursLabel(personVolunteerMinutes) },
         ];
 
   useEffect(() => {
@@ -451,8 +456,8 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h2 className="text-foreground">{lang === "zh" ? "管理员仪表板" : "Administrator Dashboard"}</h2>
-        <p className="text-sm text-muted-foreground mt-0.5">Program-wide reporting and participation overview.</p>
+        <h2 className="text-foreground">{t("admin.title")}</h2>
+        <p className="text-sm text-muted-foreground mt-0.5">{t("admin.help")}</p>
       </div>
 
       {error && (
@@ -462,52 +467,52 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
       )}
 
       <section className="rounded-2xl border border-border bg-card p-5">
-        <h3 className="text-card-foreground">All-time overview</h3>
+        <h3 className="text-card-foreground">{t("admin.allTimeOverview")}</h3>
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <StatBox label="# of students" value={loading ? "..." : String(studentUids.length)} icon={GraduationCap} />
-          <StatBox label="# of teachers" value={loading ? "..." : String(tutorUids.length)} icon={Users} />
-          <StatBox label="# of completed classes" value={loading ? "..." : String(completedClasses.length)} icon={BookOpen} />
-          <StatBox label="# of hours volunteers have put in" value={loading ? "..." : hoursLabel(allTimeVolunteerMinutes)} icon={Clock} />
+          <StatBox label={t("admin.studentCount")} value={loading ? "..." : String(studentUids.length)} icon={GraduationCap} />
+          <StatBox label={t("admin.teacherCount")} value={loading ? "..." : String(tutorUids.length)} icon={Users} />
+          <StatBox label={t("admin.completedClassCount")} value={loading ? "..." : String(completedClasses.length)} icon={BookOpen} />
+          <StatBox label={t("admin.volunteerHoursCount")} value={loading ? "..." : hoursLabel(allTimeVolunteerMinutes)} icon={Clock} />
         </div>
       </section>
 
       <section className="rounded-2xl border border-border bg-card p-5">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-start">
           <div className="grid w-full gap-4 xl:max-w-sm">
-            <h3 className="text-card-foreground">Period report</h3>
-            <CalendarInput label="Start date" value={startDate} onChange={setStartDate} />
-            <CalendarInput label="End date" value={endDate} onChange={setEndDate} />
-            <p className="text-xs text-muted-foreground">Chart interval: {interval}</p>
+            <h3 className="text-card-foreground">{t("admin.periodReport")}</h3>
+            <CalendarInput label={t("common.startDate")} value={startDate} onChange={setStartDate} />
+            <CalendarInput label={t("common.endDate")} value={endDate} onChange={setEndDate} />
+            <p className="text-xs text-muted-foreground">{t("admin.chartInterval", { interval })}</p>
           </div>
 
           <div className="grid flex-1 gap-4">
             <div className="grid gap-3 sm:grid-cols-2">
-              <StatBox label="# of students who attended classes" value={loading ? "..." : String(periodStudentUids.length)} icon={GraduationCap} />
-              <StatBox label="Total student learning hours" value={loading ? "..." : hoursLabel(periodClasses.reduce((total, cls) => total + classMinutes(cls), 0))} icon={Clock} />
-              <StatBox label="# of tutors who taught" value={loading ? "..." : String(periodTutorUids.length)} icon={Users} />
-              <StatBox label="Total tutor hours spent" value={loading ? "..." : hoursLabel(periodVolunteerMinutes)} icon={Clock} />
+              <StatBox label={t("admin.studentsAttended")} value={loading ? "..." : String(periodStudentUids.length)} icon={GraduationCap} />
+              <StatBox label={t("admin.studentLearningHours")} value={loading ? "..." : hoursLabel(periodClasses.reduce((total, cls) => total + classMinutes(cls), 0))} icon={Clock} />
+              <StatBox label={t("admin.tutorsTaught")} value={loading ? "..." : String(periodTutorUids.length)} icon={Users} />
+              <StatBox label={t("admin.tutorHoursSpent")} value={loading ? "..." : hoursLabel(periodVolunteerMinutes)} icon={Clock} />
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-xl border border-border bg-background p-4">
-                <p className="text-sm text-card-foreground">Students who did not attend</p>
+                <p className="text-sm text-card-foreground">{t("admin.studentsDidNotAttend")}</p>
                 <div className="mt-3 flex flex-col gap-2 text-sm text-muted-foreground">
                   {loading ? (
-                    <span>Loading...</span>
+                    <span>{t("common.loading")}</span>
                   ) : missingStudents.length === 0 ? (
-                    <span>None</span>
+                    <span>{t("common.none")}</span>
                   ) : (
                     missingStudents.map((student) => <span key={student.uid}>{student.name}</span>)
                   )}
                 </div>
               </div>
               <div className="rounded-xl border border-border bg-background p-4">
-                <p className="text-sm text-card-foreground">Tutors who did not teach</p>
+                <p className="text-sm text-card-foreground">{t("admin.tutorsDidNotTeach")}</p>
                 <div className="mt-3 flex flex-col gap-2 text-sm text-muted-foreground">
                   {loading ? (
-                    <span>Loading...</span>
+                    <span>{t("common.loading")}</span>
                   ) : missingTutors.length === 0 ? (
-                    <span>None</span>
+                    <span>{t("common.none")}</span>
                   ) : (
                     missingTutors.map((tutor) => <span key={tutor.uid}>{tutor.name}</span>)
                   )}
@@ -516,20 +521,20 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
             </div>
 
             <div className="grid gap-4 2xl:grid-cols-2">
-              <LineChart title="Student population growth" points={studentGrowth} />
-              <LineChart title="Teacher population growth" points={tutorGrowth} />
+              <LineChart title={t("admin.studentGrowth")} points={studentGrowth} />
+              <LineChart title={t("admin.teacherGrowth")} points={tutorGrowth} />
             </div>
           </div>
         </div>
       </section>
 
       <section className="rounded-2xl border border-border bg-card p-5">
-        <h3 className="text-card-foreground">Individual query</h3>
+        <h3 className="text-card-foreground">{t("admin.individualQuery")}</h3>
         <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1.2fr]">
-          <CalendarInput label="Start date" value={personStart} onChange={setPersonStart} />
-          <CalendarInput label="End date" value={personEnd} onChange={setPersonEnd} />
+          <CalendarInput label={t("common.startDate")} value={personStart} onChange={setPersonStart} />
+          <CalendarInput label={t("common.endDate")} value={personEnd} onChange={setPersonEnd} />
           <div>
-            <span className="text-sm text-card-foreground">Type</span>
+            <span className="text-sm text-card-foreground">{t("common.type")}</span>
             <div className="mt-2 flex h-11 rounded-xl bg-muted p-1">
               {(["student", "tutor"] as PersonType[]).map((type) => (
                 <button
@@ -542,13 +547,13 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
                     personType === type ? "bg-card text-card-foreground shadow-sm" : "text-muted-foreground"
                   }`}
                 >
-                  {type}
+                  {t(type === "student" ? "common.student" : "common.tutor")}
                 </button>
               ))}
             </div>
           </div>
           <div>
-            <span className="text-sm text-card-foreground">Name</span>
+            <span className="text-sm text-card-foreground">{t("common.name")}</span>
             <div className="mt-2">
               <SelectPerson type={personType} value={selectedPerson} onChange={setSelectedPerson} options={selectedOptions} />
             </div>

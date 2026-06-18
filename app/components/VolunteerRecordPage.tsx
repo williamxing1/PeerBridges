@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Plus, X } from "lucide-react";
 import { supabase } from "../../lib/supabase/client";
+import { useLanguage } from "../i18n";
 
 const storedUserKey = "tutorflow-user";
 
@@ -37,12 +38,12 @@ function formatUploadedAt(date: Date) {
   });
 }
 
-function formatDuration(totalMinutes: number) {
+function formatDuration(totalMinutes: number, t: ReturnType<typeof useLanguage>["t"]) {
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
-  if (hours === 0) return `${minutes} min`;
-  if (minutes === 0) return `${hours} hr`;
-  return `${hours} hr ${minutes} min`;
+  if (hours === 0) return t("common.minuteShort", { count: minutes });
+  if (minutes === 0) return t("common.hourShort", { count: hours });
+  return t("common.hourMinuteShort", { hours, minutes });
 }
 
 function toVolunteerEntry(record: VolunteerRecordRow): VolunteerEntry {
@@ -69,6 +70,7 @@ function readStoredUser() {
 }
 
 export function VolunteerRecordPage({ lang }: { lang: string }) {
+  const { t } = useLanguage();
   const [entries, setEntries] = useState<VolunteerEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -76,6 +78,7 @@ export function VolunteerRecordPage({ lang }: { lang: string }) {
   const [taskName, setTaskName] = useState("");
   const [hours, setHours] = useState("");
   const [minutes, setMinutes] = useState("");
+  const [currentTutorUid, setCurrentTutorUid] = useState("");
 
   async function getTutorUid() {
     const { data } = await supabase.auth.getUser();
@@ -90,10 +93,13 @@ export function VolunteerRecordPage({ lang }: { lang: string }) {
       setError("");
 
       const tutorUid = await getTutorUid();
+      if (!cancelled) {
+        setCurrentTutorUid(tutorUid ?? "");
+      }
       if (!tutorUid) {
         if (!cancelled) {
           setEntries([]);
-          setError("No tutor uid available.");
+          setError(t("common.noTutorUid"));
           setLoading(false);
         }
         return;
@@ -136,7 +142,7 @@ export function VolunteerRecordPage({ lang }: { lang: string }) {
     const tutorUid = await getTutorUid();
 
     if (!tutorUid) {
-      setError("No tutor uid available.");
+      setError(t("common.noTutorUid"));
       return;
     }
 
@@ -171,18 +177,23 @@ export function VolunteerRecordPage({ lang }: { lang: string }) {
       <div className="flex flex-col items-start justify-between gap-4 sm:flex-row">
         <div>
           <h2 className="text-foreground">
-            {lang === "zh" ? "志愿记录" : "Volunteer Record"}
+            {t("volunteer.title")}
           </h2>
           <p className="text-sm text-muted-foreground mt-0.5">
-            {lang === "zh" ? "查看和添加你的志愿服务时间。" : "Track tutoring tasks and volunteer hours."}
+            {t("volunteer.help")}
           </p>
+          {currentTutorUid && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t("common.tutorUid", { uid: currentTutorUid })}
+            </p>
+          )}
         </div>
 
         <Dialog.Root open={dialogOpen} onOpenChange={setDialogOpen}>
           <Dialog.Trigger asChild>
             <button className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 sm:w-auto">
               <Plus size={15} />
-              {lang === "zh" ? "手动添加" : "Add manual entry"}
+              {t("volunteer.addManual")}
             </button>
           </Dialog.Trigger>
           <Dialog.Portal>
@@ -191,10 +202,10 @@ export function VolunteerRecordPage({ lang }: { lang: string }) {
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <Dialog.Title className="text-card-foreground">
-                    {lang === "zh" ? "添加志愿记录" : "Add Volunteer Entry"}
+                    {t("volunteer.addEntry")}
                   </Dialog.Title>
                   <Dialog.Description className="mt-1 text-sm text-muted-foreground">
-                    {lang === "zh" ? "上传时间会自动记录。" : "Upload date and time will be added automatically."}
+                    {t("volunteer.uploadAuto")}
                   </Dialog.Description>
                 </div>
                 <Dialog.Close asChild>
@@ -207,24 +218,24 @@ export function VolunteerRecordPage({ lang }: { lang: string }) {
               <form onSubmit={handleSubmit} className="mt-5 flex flex-col gap-4">
                 <label className="block">
                   <span className="text-sm text-card-foreground">
-                    {lang === "zh" ? "任务名称" : "Task name"}
+                    {t("volunteer.taskName")}
                   </span>
                   <input
                     required
                     value={taskName}
                     onChange={(event) => setTaskName(event.target.value)}
-                    placeholder="e.g. Lesson prep"
+                    placeholder={t("volunteer.taskPlaceholder")}
                     className="mt-2 h-11 w-full rounded-xl border border-border bg-background px-3.5 text-sm text-foreground outline-none transition placeholder:text-muted-foreground/70 focus:border-primary/40 focus:bg-card"
                   />
                 </label>
 
                 <div>
                   <p className="text-sm text-card-foreground">
-                    {lang === "zh" ? "总时长" : "Total time"}
+                    {t("volunteer.totalTime")}
                   </p>
                   <div className="mt-2 flex gap-3">
                     <label className="block w-24">
-                      <span className="text-xs text-muted-foreground">Hours</span>
+                      <span className="text-xs text-muted-foreground">{t("common.hours")}</span>
                       <input
                         required
                         min="0"
@@ -235,7 +246,7 @@ export function VolunteerRecordPage({ lang }: { lang: string }) {
                       />
                     </label>
                     <label className="block w-24">
-                      <span className="text-xs text-muted-foreground">Minutes</span>
+                      <span className="text-xs text-muted-foreground">{t("common.minutes")}</span>
                       <input
                         required
                         min="0"
@@ -253,7 +264,7 @@ export function VolunteerRecordPage({ lang }: { lang: string }) {
                   type="submit"
                   className="mt-1 w-full rounded-xl bg-primary py-3 text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
                 >
-                  {lang === "zh" ? "添加记录" : "Enter"}
+                  {t("volunteer.enter")}
                 </button>
               </form>
             </Dialog.Content>
@@ -273,22 +284,22 @@ export function VolunteerRecordPage({ lang }: { lang: string }) {
             <thead className="bg-muted text-muted-foreground">
               <tr>
                 <th className="px-5 py-3 font-medium">#</th>
-                <th className="px-5 py-3 font-medium">{lang === "zh" ? "任务名称" : "Task name"}</th>
-                <th className="px-5 py-3 font-medium">{lang === "zh" ? "上传时间" : "Uploaded"}</th>
-                <th className="px-5 py-3 font-medium text-right">{lang === "zh" ? "小时数" : "Hours"}</th>
+                <th className="px-5 py-3 font-medium">{t("volunteer.taskName")}</th>
+                <th className="px-5 py-3 font-medium">{t("volunteer.uploaded")}</th>
+                <th className="px-5 py-3 font-medium text-right">{t("common.hours")}</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr className="border-t border-border">
                   <td colSpan={4} className="px-5 py-10 text-center text-muted-foreground">
-                    {lang === "zh" ? "正在加载志愿记录..." : "Loading volunteer records..."}
+                    {t("volunteer.loading")}
                   </td>
                 </tr>
               ) : sortedEntries.length === 0 ? (
                 <tr className="border-t border-border">
                   <td colSpan={4} className="px-5 py-10 text-center text-muted-foreground">
-                    {lang === "zh" ? "暂无志愿记录" : "No volunteer records yet."}
+                    {t("volunteer.empty")}
                   </td>
                 </tr>
               ) : (
@@ -298,7 +309,7 @@ export function VolunteerRecordPage({ lang }: { lang: string }) {
                     <td className="px-5 py-4 text-card-foreground">{entry.taskName}</td>
                     <td className="px-5 py-4 text-muted-foreground">{entry.uploadedAt}</td>
                     <td className="px-5 py-4 text-right text-card-foreground">
-                      {formatDuration(entry.totalMinutes)}
+                      {formatDuration(entry.totalMinutes, t)}
                     </td>
                   </tr>
                 ))
