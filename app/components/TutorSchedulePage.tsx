@@ -34,6 +34,11 @@ const SLOT_TIMES = [
   "9:00 AM", "9:30 AM", "10:00 AM", "10:30 AM",
   "11:00 AM", "11:30 AM",
 ];
+const SLOT_ENDS = [
+  "7:30 AM", "8:00 AM", "8:30 AM", "9:00 AM",
+  "9:30 AM", "10:00 AM", "10:30 AM", "11:00 AM",
+  "11:30 AM", "12:00 PM",
+];
 
 const ALL_SLOT_INDICES = SLOT_TIMES.map((_, index) => index);
 const SLOT_COLUMN_SUFFIXES = ["700", "730", "800", "830", "900", "930", "1000", "1030", "1100", "1130"];
@@ -41,16 +46,31 @@ const AVAILABILITY_COLUMNS = (["sat", "sun"] as Day[]).flatMap((day) =>
   SLOT_COLUMN_SUFFIXES.map((suffix) => `${day}_${suffix}`)
 );
 
-function getWeekendDates() {
+function getBaseWeekendDates() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const dayOfWeek = today.getDay();
-  const daysUntilSat = (6 - dayOfWeek + 7) % 7 || 7;
+  const afterTutorCutoff = dayOfWeek >= 5 || dayOfWeek === 0;
+  let daysUntilSat = (6 - dayOfWeek + 7) % 7;
+  if (dayOfWeek === 0) {
+    daysUntilSat = -1;
+  }
   const sat = new Date(today);
   sat.setDate(today.getDate() + daysUntilSat);
   const sun = new Date(sat);
   sun.setDate(sat.getDate() + 1);
-  return { sat, sun };
+  return { sat, sun, afterTutorCutoff };
+}
+
+function getWeekendDates(showNextWeekend: boolean) {
+  const base = getBaseWeekendDates();
+  if (!showNextWeekend) return base;
+
+  const sat = new Date(base.sat);
+  sat.setDate(base.sat.getDate() + 7);
+  const sun = new Date(sat);
+  sun.setDate(sat.getDate() + 1);
+  return { ...base, sat, sun };
 }
 
 function formatDate(d: Date, lang: string = "en") {
@@ -64,11 +84,47 @@ function formatDbDate(d: Date) {
   return `${year}-${month}-${day}`;
 }
 
-function formatTime(time: string) {
-  return new Date(`1970-01-01T${time}`).toLocaleTimeString("en-US", {
+function parseSlotTime(time: string) {
+  const [hourPart, minutePart, period] = time.match(/(\d+):(\d+) (AM|PM)/)?.slice(1) ?? [];
+  let hours = Number(hourPart);
+  const minutes = Number(minutePart);
+  if (period === "PM" && hours !== 12) hours += 12;
+  if (period === "AM" && hours === 12) hours = 0;
+  return { hours, minutes };
+}
+
+function beijingSlotInstant(date: Date, slotIdx: number, ends = false) {
+  const { hours, minutes } = parseSlotTime(ends ? SLOT_ENDS[slotIdx] : SLOT_TIMES[slotIdx]);
+  return new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate(), hours - 8, minutes, 0));
+}
+
+function dbInstant(date: string, time: string) {
+  const [year, month, day] = date.split("-").map(Number);
+  const [hours, minutes, seconds = 0] = time.split(":").map(Number);
+  return new Date(Date.UTC(year, month - 1, day, hours - 8, minutes, seconds));
+}
+
+function formatLocalTime(date: Date, lang: string) {
+  return date.toLocaleTimeString(lang === "zh" ? "zh-CN" : "en-US", {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function formatLocalSlotRange(date: Date, slotIdx: number, lang: string) {
+  return `${formatLocalTime(beijingSlotInstant(date, slotIdx), lang)} - ${formatLocalTime(beijingSlotInstant(date, slotIdx, true), lang)}`;
+}
+
+function formatLocalDbTimeRange(date: string, startTime: string, endTime: string, lang: string) {
+  return `${formatLocalTime(dbInstant(date, startTime), lang)} - ${formatLocalTime(dbInstant(date, endTime), lang)}`;
+}
+
+function formatLocalSlotDate(date: Date, lang: string) {
+  return formatDate(beijingSlotInstant(date, 0), lang);
+}
+
+function currentTimeZoneLabel() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "local time";
 }
 
 function slotKey(day: Day, slotIdx: number) {
@@ -130,11 +186,13 @@ function BookingPanel({
   booking,
   onClose,
   onCancelClass,
+  locked,
   lang,
 }: {
   booking: Booking;
   onClose: () => void;
   onCancelClass: () => void;
+  locked: boolean;
   lang: string;
 }) {
   const { t } = useLanguage();
@@ -192,7 +250,8 @@ function BookingPanel({
       <div className="px-5 py-4 border-t border-border shrink-0">
         <button
           onClick={onCancelClass}
-          className="w-full rounded-xl border border-border bg-card py-3 text-sm text-card-foreground hover:bg-accent transition-colors"
+          disabled={locked}
+          className="w-full rounded-xl border border-border bg-card py-3 text-sm text-card-foreground hover:bg-accent transition-colors disabled:cursor-not-allowed disabled:opacity-50"
         >
           {t("schedule.markUnavailable")}
         </button>
@@ -254,16 +313,22 @@ function CancelBookingDialog({
 
 function SlotButton({
   day,
+  date,
   slotIdx,
   available,
   booking,
   onClick,
+  lang,
+  locked,
 }: {
   day: Day;
+  date: Date;
   slotIdx: number;
   available: boolean;
   booking?: Booking;
   onClick: (day: Day, slotIdx: number) => void;
+  lang: string;
+  locked: boolean;
 }) {
   const { t } = useLanguage();
   let stateClass = "bg-muted/50 text-muted-foreground/40 border-transparent hover:bg-muted";
@@ -277,12 +342,18 @@ function SlotButton({
     label = t("common.available");
   }
 
+  if (locked && !booking) {
+    stateClass = available
+      ? "bg-card text-card-foreground border-border opacity-70"
+      : "bg-muted/50 text-muted-foreground/40 border-transparent";
+  }
+
   return (
     <button
       onClick={() => onClick(day, slotIdx)}
-      className={`w-full border rounded-lg text-xs px-3 py-2.5 transition-all flex items-center justify-between cursor-pointer ${stateClass}`}
+      className={`w-full border rounded-lg text-xs px-3 py-2.5 transition-all flex items-center justify-between ${locked && !booking ? "cursor-not-allowed" : "cursor-pointer"} ${stateClass}`}
     >
-      <span>{SLOT_TIMES[slotIdx]}</span>
+      <span>{formatLocalSlotRange(date, slotIdx, lang)}</span>
       <span className="text-[10px] opacity-70">{label}</span>
     </button>
   );
@@ -294,28 +365,34 @@ function DayColumn({
   availability,
   bookings,
   onToggle,
+  locked,
 }: {
   day: Day;
   date: Date;
   availability: Availability;
   bookings: Record<string, Booking>;
   onToggle: (day: Day, slotIdx: number) => void;
+  locked: boolean;
 }) {
   const { lang, t } = useLanguage();
+  const timeZone = currentTimeZoneLabel();
   return (
     <div className="flex flex-col gap-1.5">
       <div className="mb-2">
-        <p className="text-card-foreground text-sm">{day === "sat" ? t("common.saturday") : t("common.sunday")}</p>
-        <p className="text-xs text-muted-foreground">{formatDate(date, lang)}</p>
+        <p className="text-card-foreground text-sm">{formatLocalSlotDate(date, lang)}</p>
+        <p className="text-xs text-muted-foreground">{day === "sat" ? t("common.saturday") : t("common.sunday")} · {timeZone}</p>
       </div>
       {SLOT_TIMES.map((_, idx) => (
         <SlotButton
           key={idx}
           day={day}
+          date={date}
           slotIdx={idx}
           available={availability[day].includes(idx)}
           booking={bookings[slotKey(day, idx)]}
           onClick={onToggle}
+          lang={lang}
+          locked={locked}
         />
       ))}
     </div>
@@ -324,7 +401,7 @@ function DayColumn({
 
 export function TutorSchedulePage({ lang }: { lang: string }) {
   const { t } = useLanguage();
-  const weekendDates = getWeekendDates();
+  const [weekendDates, setWeekendDates] = useState(() => getWeekendDates(false));
   const [availability, setAvailability] = useState<Availability>({
     sat: ALL_SLOT_INDICES,
     sun: ALL_SLOT_INDICES,
@@ -342,6 +419,7 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
 
   const selectedBooking = selectedBookingKey ? bookings[selectedBookingKey] : null;
   const hasAvailability = availability.sat.length + availability.sun.length > 0;
+  const changesLocked = weekendDates.afterTutorCutoff;
 
   async function getTutorUid() {
     const { data } = await supabase.auth.getUser();
@@ -391,9 +469,10 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
       }
 
       const { availability: nextAvailability, unset } = profileToAvailability(profile as unknown as TutorProfileAvailability);
+      const nextWeekendDates = getWeekendDates(weekendDates.afterTutorCutoff && unset);
 
-      const satDate = formatDbDate(weekendDates.sat);
-      const sunDate = formatDbDate(weekendDates.sun);
+      const satDate = formatDbDate(nextWeekendDates.sat);
+      const sunDate = formatDbDate(nextWeekendDates.sun);
       const { data: classRows, error: classesError } = await supabase
         .from("classes")
         .select("lesson_id, student_uid, teacher_uid, lesson_date, start_time, end_time")
@@ -442,8 +521,8 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
         const booking: Booking = {
           student,
           note: "",
-          date: formatDate(day === "sat" ? weekendDates.sat : weekendDates.sun, lang),
-          time: `${formatTime(cls.start_time)} - ${formatTime(cls.end_time)}`,
+          date: formatLocalSlotDate(day === "sat" ? nextWeekendDates.sat : nextWeekendDates.sun, lang),
+          time: formatLocalDbTimeRange(cls.lesson_date, cls.start_time, cls.end_time, lang),
         };
 
         for (let idx = startIdx; idx < endIdx; idx += 1) {
@@ -455,6 +534,7 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
 
       if (!cancelled) {
         setAvailability(nextAvailability);
+        setWeekendDates(nextWeekendDates);
         setAvailabilityUnset(unset);
         setBookings(nextBookings);
         setSaved(!unset);
@@ -480,6 +560,10 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
       return;
     }
 
+    if (changesLocked) {
+      return;
+    }
+
     setAvailability((current) => ({
       ...current,
       [day]: available
@@ -490,7 +574,7 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
   }
 
   function confirmCancelBookedSlot() {
-    if (!pendingCancel) return;
+    if (!pendingCancel || changesLocked) return;
     const key = slotKey(pendingCancel.day, pendingCancel.slotIdx);
 
     setBookings((current) => {
@@ -510,6 +594,8 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
   }
 
   async function saveAvailability() {
+    if (changesLocked) return;
+
     setSaving(true);
     setError("");
 
@@ -545,6 +631,9 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
             <h2 className="text-foreground">{t("schedule.setAvailability")}</h2>
             <p className="text-sm text-muted-foreground mt-0.5">
               {t("schedule.setAvailabilityHelp")}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t(weekendDates.afterTutorCutoff ? (availabilityUnset ? "schedule.tutorUnsetAfterCutoffNote" : "schedule.tutorCutoffActiveNote") : "schedule.timezoneNote")}
             </p>
             {currentTutorUid && (
               <p className="mt-1 text-xs text-muted-foreground">
@@ -602,7 +691,7 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
             </div>
             <button
               onClick={saveAvailability}
-              disabled={!hasAvailability || saving || loading}
+              disabled={!hasAvailability || saving || loading || changesLocked}
               className="rounded-xl bg-primary px-5 py-2.5 text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {saving ? t("common.saving") : saved && !dirty ? t("common.availabilitySaved") : t("common.saveAvailability")}
@@ -616,6 +705,7 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
               availability={availability}
               bookings={bookings}
               onToggle={toggleSlot}
+              locked={changesLocked}
             />
             <DayColumn
               day="sun"
@@ -623,6 +713,7 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
               availability={availability}
               bookings={bookings}
               onToggle={toggleSlot}
+              locked={changesLocked}
             />
           </div>
         </div>
@@ -638,8 +729,11 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
               onClose={() => setSelectedBookingKey(null)}
               onCancelClass={() => {
                 const [day, slot] = selectedBookingKey!.split("-") as [Day, string];
-                setPendingCancel({ day, slotIdx: Number(slot), booking: selectedBooking });
+                if (!changesLocked) {
+                  setPendingCancel({ day, slotIdx: Number(slot), booking: selectedBooking });
+                }
               }}
+              locked={changesLocked}
               lang={lang}
             />
           )}

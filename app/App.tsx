@@ -1,13 +1,15 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { Suspense } from "react";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { StudentSchedulePage } from "./components/StudentSchedulePage";
 import { TutorSchedulePage } from "./components/TutorSchedulePage";
 import { VolunteerRecordPage } from "./components/VolunteerRecordPage";
 import { AdminDashboardPage } from "./components/AdminDashboardPage";
+import { ManageMediaPage, MediaListPage } from "./components/MediaPages";
 import { LanguageProvider, LanguageSelect, optionLabel, useLanguage } from "./i18n";
 import { supabase } from "../lib/supabase/client";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
@@ -22,6 +24,7 @@ import {
   BookOpen,
   Clock,
   FileText,
+  GraduationCap,
   MessageSquare,
   CheckCircle2,
   Settings,
@@ -140,6 +143,7 @@ const COMPLETED_CLASSES = [
 ];
 
 const storedUserKey = "tutorflow-user";
+const storedUserUpdatedEvent = "tutorflow-user-updated";
 const provinces = ["Ontario", "British Columbia", "Alberta", "Quebec", "California", "New York"];
 const cities = ["Toronto", "Vancouver", "Calgary", "Montreal", "Los Angeles", "New York City"];
 const gradeOptions = ["Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6", "Grade 7", "Grade 8", "Grade 9", "Grade 10", "Grade 11", "Grade 12"];
@@ -148,10 +152,11 @@ const tutorStudentGrades = ["Elementary school", "Middle school", "High school"]
 
 type StoredUser = {
   uid: string;
-  role: string;
+  role: AccountRole;
   name: string;
   email: string;
 };
+type AccountRole = "student" | "tutor" | "admin";
 type SettingsProfile = {
   uid: string;
   role: "student" | "tutor" | "admin";
@@ -176,6 +181,15 @@ type ClassRow = {
   start_time: string;
   end_time: string;
   evaluation_completed: boolean;
+  student_attended?: boolean;
+  teacher_attended?: boolean;
+  student_wants_to_share?: string | null;
+};
+type BasicProfile = {
+  uid: string;
+  name: string;
+  email?: string;
+  wechat_id?: string;
 };
 type VolunteerRecordRow = {
   minutes: number;
@@ -228,13 +242,20 @@ type UIClass = {
   student: string;
   studentUid: string;
   teacher: string;
+  tutorName: string;
   teacherUid: string;
+  displayPersonUid: string;
+  displayPersonRole: "student" | "tutor";
+  displayPersonName: string;
+  descriptionLines: string[];
   date: string;
   time: string;
   startsAt: Date;
   endsAt: Date;
   minutes: number;
   evaluationCompleted: boolean;
+  studentAttended?: boolean;
+  teacherAttended?: boolean;
   classLink?: string;
   meetingPassword?: string;
   feedback?: typeof LAST_FEEDBACK;
@@ -276,7 +297,9 @@ const emptyStudentDashboardData: StudentDashboardData = {
 };
 
 function getClassDateTime(date: string, time: string) {
-  return new Date(`${date}T${time}`);
+  const [year, month, day] = date.split("-").map(Number);
+  const [hours, minutes, seconds = 0] = time.split(":").map(Number);
+  return new Date(Date.UTC(year, month - 1, day, hours - 8, minutes, seconds));
 }
 
 function formatDateForQuery(date: Date) {
@@ -301,6 +324,14 @@ function formatClassDate(date: string) {
   });
 }
 
+function formatClassDateFromInstant(date: Date) {
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
 function formatDueDate(date: string) {
   return new Date(`${date}T00:00:00`).toLocaleDateString("en-US", {
     month: "short",
@@ -316,6 +347,13 @@ function formatClassTime(time: string) {
   });
 }
 
+function formatClassTimeFromInstant(date: Date) {
+  return date.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 function getClassMinutes(cls: ClassRow) {
   const startsAt = getClassDateTime(cls.lesson_date, cls.start_time);
   const endsAt = getClassDateTime(cls.lesson_date, cls.end_time);
@@ -324,13 +362,16 @@ function getClassMinutes(cls: ClassRow) {
 
 function toUIClass(
   cls: ClassRow,
-  studentNames: Map<string, string>,
+  studentProfiles: Map<string, BasicProfile>,
   teacherName: string,
   meetingDetails?: { classLink: string; meetingPassword: string }
 ): UIClass {
   const startsAt = getClassDateTime(cls.lesson_date, cls.start_time);
   const endsAt = getClassDateTime(cls.lesson_date, cls.end_time);
-  const student = studentNames.get(cls.student_uid) ?? `Unknown student (${cls.student_uid.slice(0, 8)})`;
+  const studentProfile = studentProfiles.get(cls.student_uid);
+  const student = studentProfile?.name ?? `Unknown student (${cls.student_uid.slice(0, 8)})`;
+  const studentNote = cls.student_wants_to_share?.trim() || "None";
+  const studentWechat = studentProfile?.wechat_id?.trim() || "None";
 
   return {
     id: cls.lesson_id,
@@ -338,13 +379,23 @@ function toUIClass(
     student,
     studentUid: cls.student_uid,
     teacher: teacherName,
+    tutorName: teacherName,
     teacherUid: cls.teacher_uid,
-    date: formatClassDate(cls.lesson_date),
-    time: `${formatClassTime(cls.start_time)} - ${formatClassTime(cls.end_time)}`,
+    displayPersonUid: cls.student_uid,
+    displayPersonRole: "student",
+    displayPersonName: student,
+    descriptionLines: [
+      `Student Notes: ${studentNote}`,
+      `Student WeChat ID: ${studentWechat}`,
+    ],
+    date: formatClassDateFromInstant(startsAt),
+    time: `${formatClassTimeFromInstant(startsAt)} - ${formatClassTimeFromInstant(endsAt)}`,
     startsAt,
     endsAt,
     minutes: getClassMinutes(cls),
     evaluationCompleted: cls.evaluation_completed,
+    studentAttended: cls.student_attended,
+    teacherAttended: cls.teacher_attended,
     classLink: meetingDetails?.classLink,
     meetingPassword: meetingDetails?.meetingPassword,
     feedback: cls.evaluation_completed ? LAST_FEEDBACK : undefined,
@@ -359,9 +410,11 @@ function toStudentUIClass(
 ): UIClass {
   const startsAt = getClassDateTime(cls.lesson_date, cls.start_time);
   const endsAt = getClassDateTime(cls.lesson_date, cls.end_time);
-  const teacher = teacherNames.get(cls.teacher_uid) ?? cls.teacher_uid;
+  const teacher = teacherNames.get(cls.teacher_uid)?.trim() || "Tutor";
   const details = tutorDetails.get(cls.teacher_uid);
   const evaluation = evaluations.get(cls.lesson_id);
+  const studentNote = cls.student_wants_to_share?.trim() || "None";
+  const meetingPassword = details?.meetingPassword?.trim() || "None";
 
   return {
     id: cls.lesson_id,
@@ -369,13 +422,23 @@ function toStudentUIClass(
     student: "",
     studentUid: cls.student_uid,
     teacher,
+    tutorName: teacher,
     teacherUid: cls.teacher_uid,
-    date: formatClassDate(cls.lesson_date),
-    time: `${formatClassTime(cls.start_time)} - ${formatClassTime(cls.end_time)}`,
+    displayPersonUid: cls.teacher_uid,
+    displayPersonRole: "tutor",
+    displayPersonName: teacher,
+    descriptionLines: [
+      `My note: ${studentNote}`,
+      `Meeting password: ${meetingPassword}`,
+    ],
+    date: formatClassDateFromInstant(startsAt),
+    time: `${formatClassTimeFromInstant(startsAt)} - ${formatClassTimeFromInstant(endsAt)}`,
     startsAt,
     endsAt,
     minutes: getClassMinutes(cls),
     evaluationCompleted: cls.evaluation_completed,
+    studentAttended: cls.student_attended,
+    teacherAttended: cls.teacher_attended,
     classLink: details?.classLink,
     meetingPassword: details?.meetingPassword,
     feedback: evaluation
@@ -394,11 +457,30 @@ function readStoredUser() {
   if (typeof window === "undefined") return null;
 
   try {
-    const stored = sessionStorage.getItem(storedUserKey);
+    const stored = sessionStorage.getItem(storedUserKey) || localStorage.getItem(storedUserKey);
     return stored ? (JSON.parse(stored) as StoredUser) : null;
   } catch {
     return null;
   }
+}
+
+function writeStoredUser(user: StoredUser) {
+  if (typeof window === "undefined") return;
+
+  const serialized = JSON.stringify(user);
+  sessionStorage.setItem(storedUserKey, serialized);
+  localStorage.setItem(storedUserKey, serialized);
+  window.dispatchEvent(new CustomEvent<StoredUser>(storedUserUpdatedEvent, { detail: user }));
+}
+
+function clearStoredAuthState() {
+  if (typeof window === "undefined") return;
+
+  sessionStorage.removeItem(storedUserKey);
+  localStorage.removeItem(storedUserKey);
+  Object.keys(localStorage)
+    .filter((key) => key.startsWith("sb-") && key.includes("auth-token"))
+    .forEach((key) => localStorage.removeItem(key));
 }
 
 function SettingsField({
@@ -471,10 +553,12 @@ function AccountSettingsDialog({
   open,
   onOpenChange,
   fallbackUser,
+  onUserUpdated,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   fallbackUser: typeof STUDENT;
+  onUserUpdated: (user: StoredUser) => void;
 }) {
   const { t } = useLanguage();
   const router = useRouter();
@@ -667,12 +751,14 @@ function AccountSettingsDialog({
       }
     }
 
-    sessionStorage.setItem(storedUserKey, JSON.stringify({
+    const updatedUser: StoredUser = {
       uid: profile.uid,
       role: profile.role,
       name: profile.name,
       email: profile.email,
-    }));
+    };
+    writeStoredUser(updatedUser);
+    onUserUpdated(updatedUser);
     setMessage(t("settings.saved"));
     setSaving(false);
   }
@@ -705,9 +791,9 @@ function AccountSettingsDialog({
     }
 
     await supabase.auth.signOut();
-    sessionStorage.removeItem(storedUserKey);
+    clearStoredAuthState();
     onOpenChange(false);
-    router.push("/");
+    router.replace("/");
   }
 
   const sidebarItems = [
@@ -856,6 +942,29 @@ function BlankAvatar({ size = 40 }: { size?: number }) {
   );
 }
 
+async function handleJoinClass(cls: {
+  id: string | number;
+  startsAt?: Date;
+  classLink?: string;
+}, attendee: "student" | "teacher") {
+  if (cls.startsAt) {
+    const startsAt = cls.startsAt.getTime();
+    const now = Date.now();
+    const tenMinutes = 10 * 60 * 1000;
+
+    if (now >= startsAt - tenMinutes && now <= startsAt + tenMinutes) {
+      await supabase
+        .from("classes")
+        .update({ [attendee === "student" ? "student_attended" : "teacher_attended"]: true })
+        .eq("lesson_id", cls.id);
+    }
+  }
+
+  if (cls.classLink) {
+    window.open(cls.classLink, "_blank", "noopener,noreferrer");
+  }
+}
+
 function FeedbackDialog({
   open,
   onClose,
@@ -898,19 +1007,183 @@ function FeedbackDialog({
   );
 }
 
+type ProfileDetail = {
+  label: string;
+  value: string;
+};
+
+function labelFromColumn(column: string) {
+  return column
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function PersonProfileDialog({
+  person,
+  onClose,
+}: {
+  person: { uid: string; role: "student" | "tutor"; name: string } | null;
+  onClose: () => void;
+}) {
+  const { t } = useLanguage();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [details, setDetails] = useState<ProfileDetail[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadProfile() {
+      if (!person) return;
+      setLoading(true);
+      setError("");
+      setDetails([]);
+
+      const { data: baseProfile, error: baseError } = await supabase
+        .from("profiles")
+        .select("name, email, wechat_id")
+        .eq("uid", person.uid)
+        .maybeSingle();
+
+      if (baseError || !baseProfile) {
+        if (!cancelled) {
+          setError(baseError?.message || t("dashboard.profileLoadError"));
+          setLoading(false);
+        }
+        return;
+      }
+
+      const profileTable = person.role === "student" ? "student_profiles" : "tutor_profiles";
+      const { data: roleProfile, error: roleError } = await supabase
+        .from(profileTable)
+        .select("*")
+        .eq("uid", person.uid)
+        .maybeSingle();
+
+      if (roleError) {
+        if (!cancelled) {
+          setError(roleError.message);
+          setLoading(false);
+        }
+        return;
+      }
+
+      const hiddenFields = new Set(
+        person.role === "student"
+          ? ["uid", "referrer", "trial_teacher"]
+          : [
+              "uid",
+              "how_found_out",
+              "sat_700",
+              "sat_730",
+              "sat_800",
+              "sat_830",
+              "sat_900",
+              "sat_930",
+              "sat_1000",
+              "sat_1030",
+              "sat_1100",
+              "sat_1130",
+              "sun_700",
+              "sun_730",
+              "sun_800",
+              "sun_830",
+              "sun_900",
+              "sun_930",
+              "sun_1000",
+              "sun_1030",
+              "sun_1100",
+              "sun_1130",
+            ]
+      );
+
+      const roleDetails = Object.entries(roleProfile ?? {})
+        .filter(([key, value]) => !hiddenFields.has(key) && value !== null && value !== "")
+        .map(([key, value]) => ({
+          label: labelFromColumn(key),
+          value: String(value),
+        }));
+
+      if (!cancelled) {
+        setDetails([
+          { label: t("common.name"), value: baseProfile.name },
+          { label: t("auth.email"), value: baseProfile.email },
+          { label: t("auth.wechatId"), value: baseProfile.wechat_id },
+          ...roleDetails,
+        ]);
+        setLoading(false);
+      }
+    }
+
+    void loadProfile();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [person, t]);
+
+  return (
+    <Dialog.Root open={person !== null} onOpenChange={(open) => !open && onClose()}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-border bg-card p-5 shadow-2xl">
+          <div className="mb-5 flex items-start justify-between gap-4">
+            <div>
+              <Dialog.Title className="text-card-foreground">{person?.name}</Dialog.Title>
+              <Dialog.Description className="mt-1 text-sm text-muted-foreground">
+                {person?.role === "student" ? t("common.student") : t("common.tutor")}
+              </Dialog.Description>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted"
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          {loading ? (
+            <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
+          ) : error ? (
+            <p className="rounded-xl border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>
+          ) : (
+            <div className="divide-y divide-border border-y border-border">
+              {details.map((detail) => (
+                <div key={detail.label} className="grid gap-1 py-3 sm:grid-cols-[9rem_1fr] sm:gap-4">
+                  <p className="text-xs text-muted-foreground">{detail.label}</p>
+                  <p className="break-words text-sm text-card-foreground">{detail.value}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
 function ClassCard({
   cls,
   completed,
   feedbackLabel = "View Teacher Feedback",
   feedbackPendingLabel = "Teacher feedback pending",
   useEvaluationPage = false,
+  attendee = "student",
 }: {
   cls: {
     id: string | number;
     name: string;
     teacher: string;
+    tutorName?: string;
+    displayPersonUid?: string;
+    displayPersonRole?: "student" | "tutor";
+    displayPersonName?: string;
+    descriptionLines?: string[];
     date: string;
     time: string;
+    startsAt?: Date;
     evaluationCompleted?: boolean;
     classLink?: string;
     meetingPassword?: string;
@@ -920,9 +1193,12 @@ function ClassCard({
   feedbackLabel?: string;
   feedbackPendingLabel?: string;
   useEvaluationPage?: boolean;
+  attendee?: "student" | "teacher";
 }) {
   const { t } = useLanguage();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [profilePerson, setProfilePerson] = useState<{ uid: string; role: "student" | "tutor"; name: string } | null>(null);
+  const displayPersonName = cls.displayPersonName ?? cls.tutorName ?? cls.teacher;
   const actionLabel =
     completed && "evaluationCompleted" in cls
       ? cls.evaluationCompleted
@@ -939,12 +1215,32 @@ function ClassCard({
             <CheckCircle2 size={16} className="text-emerald-500 shrink-0 mt-0.5" />
           )}
         </div>
-        <div className="flex items-center gap-2.5">
+        <button
+          type="button"
+          onClick={() => {
+            if (cls.displayPersonUid && cls.displayPersonRole) {
+              setProfilePerson({
+                uid: cls.displayPersonUid,
+                role: cls.displayPersonRole,
+                name: displayPersonName,
+              });
+            }
+          }}
+          className="flex w-fit items-center gap-2.5 rounded-lg text-left transition-colors hover:bg-accent"
+        >
           <BlankAvatar size={32} />
-          <div>
-            <p className="text-sm text-card-foreground">{cls.teacher}</p>
+          <div className="flex items-center gap-1.5">
+            <p className="text-sm text-card-foreground">{displayPersonName}</p>
+            <ChevronRight size={13} className="text-muted-foreground" />
           </div>
-        </div>
+        </button>
+        {cls.descriptionLines && cls.descriptionLines.length > 0 && (
+          <div className="grid gap-1 text-xs leading-relaxed text-muted-foreground">
+            {cls.descriptionLines.map((line) => (
+              <p key={line}>{line}</p>
+            ))}
+          </div>
+        )}
         <div className="flex items-center gap-4 text-xs text-muted-foreground">
           <span className="flex items-center gap-1">
             <CalendarDays size={12} />
@@ -987,7 +1283,7 @@ function ClassCard({
         {!completed && (
           <button
             type="button"
-            onClick={() => cls.classLink && window.open(cls.classLink, "_blank", "noopener,noreferrer")}
+            onClick={() => void handleJoinClass(cls, attendee)}
             disabled={!cls.classLink}
             className="mt-1 w-full text-center text-xs text-primary border border-primary/30 rounded-lg py-1.5 hover:bg-accent transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -1002,6 +1298,7 @@ function ClassCard({
           feedback={cls.feedback}
         />
       )}
+      <PersonProfileDialog person={profilePerson} onClose={() => setProfilePerson(null)} />
     </>
   );
 }
@@ -1011,9 +1308,11 @@ function ClassCard({
 function TopNav({
   user,
   onMenuClick,
+  onUserUpdated,
 }: {
   user: typeof STUDENT;
   onMenuClick: () => void;
+  onUserUpdated: (user: StoredUser) => void;
 }) {
   const router = useRouter();
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -1021,8 +1320,8 @@ function TopNav({
 
   async function handleSignOut() {
     await supabase.auth.signOut();
-    sessionStorage.removeItem(storedUserKey);
-    router.push("/");
+    clearStoredAuthState();
+    router.replace("/");
   }
 
   return (
@@ -1093,7 +1392,12 @@ function TopNav({
         </DropdownMenu.Portal>
       </DropdownMenu.Root>
     </header>
-    <AccountSettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} fallbackUser={user} />
+    <AccountSettingsDialog
+      open={settingsOpen}
+      onOpenChange={setSettingsOpen}
+      fallbackUser={user}
+      onUserUpdated={onUserUpdated}
+    />
     </>
   );
 }
@@ -1105,6 +1409,10 @@ function Sidebar({
   dashboardHref,
   scheduleHref,
   recordHref,
+  trainingHref,
+  volunteerAwardHref,
+  studentMaterialsHref,
+  manageMediaHref,
   open,
   onClose,
 }: {
@@ -1112,10 +1420,15 @@ function Sidebar({
   dashboardHref: string;
   scheduleHref?: string | null;
   recordHref?: string;
+  trainingHref?: string;
+  volunteerAwardHref?: string;
+  studentMaterialsHref?: string;
+  manageMediaHref?: string;
   open: boolean;
   onClose: () => void;
 }) {
   const { t } = useLanguage();
+  const router = useRouter();
   const items = [
     { id: "dashboard", href: dashboardHref, icon: LayoutDashboard, label: t("common.dashboard") },
     ...(scheduleHref
@@ -1123,6 +1436,18 @@ function Sidebar({
       : []),
     ...(recordHref
       ? [{ id: "record", href: recordHref, icon: FileText, label: t("common.volunteerRecord") }]
+      : []),
+    ...(trainingHref
+      ? [{ id: "training", href: trainingHref, icon: GraduationCap, label: t("common.trainingMaterials") }]
+      : []),
+    ...(volunteerAwardHref
+      ? [{ id: "awards", href: volunteerAwardHref, icon: FileText, label: t("common.volunteerAwards") }]
+      : []),
+    ...(studentMaterialsHref
+      ? [{ id: "studentMaterials", href: studentMaterialsHref, icon: FileText, label: t("common.studentMaterials") }]
+      : []),
+    ...(manageMediaHref
+      ? [{ id: "manageMedia", href: manageMediaHref, icon: GraduationCap, label: t("common.manageMedia") }]
       : []),
   ];
   return (
@@ -1160,7 +1485,12 @@ function Sidebar({
         <Link
           key={id}
           href={href}
-          onClick={onClose}
+          prefetch={false}
+          onClick={(event) => {
+            event.preventDefault();
+            onClose();
+            router.push(href);
+          }}
           className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm transition-all cursor-pointer ${
             active === id
               ? "bg-primary text-primary-foreground shadow-sm"
@@ -1422,19 +1752,30 @@ function PendingEvaluationsCard({
 function UpcomingClassHero({
   cls,
   lang,
+  attendee,
 }: {
   cls: {
+    id: string | number;
     name: string;
     teacher: string;
+    displayPersonName?: string;
+    displayPersonUid?: string;
+    displayPersonRole?: "student" | "tutor";
+    descriptionLines?: string[];
     date: string;
     time: string;
+    startsAt?: Date;
     classLink?: string;
     meetingPassword?: string;
   };
   lang: string;
+  attendee: "student" | "teacher";
 }) {
   const { t } = useLanguage();
+  const [profilePerson, setProfilePerson] = useState<{ uid: string; role: "student" | "tutor"; name: string } | null>(null);
+  const displayPersonName = cls.displayPersonName ?? cls.teacher;
   return (
+    <>
     <div className="bg-gradient-to-br from-primary/10 via-accent to-secondary border border-primary/20 rounded-2xl p-6 flex flex-col sm:flex-row gap-6 items-start sm:items-center">
       <div className="flex-1 flex flex-col gap-4">
         <div className="flex items-center gap-2 flex-wrap">
@@ -1452,23 +1793,45 @@ function UpcomingClassHero({
             <p className="mt-2 text-xs text-muted-foreground">{t("dashboard.meetingPassword", { password: cls.meetingPassword })}</p>
           )}
         </div>
-        <div className="flex items-center gap-3">
+        {cls.descriptionLines && cls.descriptionLines.length > 0 && (
+          <div className="grid gap-1 text-xs leading-relaxed text-muted-foreground">
+            {cls.descriptionLines.map((line) => (
+              <p key={line}>{line}</p>
+            ))}
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            if (cls.displayPersonUid && cls.displayPersonRole) {
+              setProfilePerson({ uid: cls.displayPersonUid, role: cls.displayPersonRole, name: displayPersonName });
+            }
+          }}
+          className="flex w-fit items-center gap-3 rounded-lg text-left transition-colors hover:bg-accent"
+        >
           <BlankAvatar size={36} />
           <div>
-            <p className="text-sm text-card-foreground">{cls.teacher}</p>
-            <p className="text-xs text-muted-foreground">{t("dashboard.yourTutor")}</p>
+            <p className="flex items-center gap-1.5 text-sm text-card-foreground">
+              {displayPersonName}
+              <ChevronRight size={13} className="text-muted-foreground" />
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {cls.displayPersonRole === "student" ? t("common.student") : t("dashboard.yourTutor")}
+            </p>
           </div>
-        </div>
+        </button>
       </div>
       <button
         type="button"
-        onClick={() => cls.classLink && window.open(cls.classLink, "_blank", "noopener,noreferrer")}
+        onClick={() => void handleJoinClass(cls, attendee)}
         disabled={!cls.classLink}
         className="w-full shrink-0 bg-primary text-primary-foreground px-6 py-3 rounded-xl text-sm hover:bg-primary/90 transition-colors cursor-pointer shadow-sm disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
       >
         {t("dashboard.joinSession")}
       </button>
     </div>
+    <PersonProfileDialog person={profilePerson} onClose={() => setProfilePerson(null)} />
+    </>
   );
 }
 
@@ -1482,6 +1845,7 @@ function ClassesCard({
   completedClasses = COMPLETED_CLASSES,
   loading = false,
   useEvaluationPage = false,
+  attendee = "student",
 }: {
   lang: string;
   feedbackLabel?: string;
@@ -1506,6 +1870,7 @@ function ClassesCard({
   }>;
   loading?: boolean;
   useEvaluationPage?: boolean;
+  attendee?: "student" | "teacher";
 }) {
   const { t } = useLanguage();
   const resolvedFeedbackLabel = feedbackLabel ?? t("dashboard.viewTeacherFeedback");
@@ -1543,9 +1908,9 @@ function ClassesCard({
             <div className="flex flex-col gap-3">
               {upcomingClasses.map((cls, index) =>
                 index === 0 ? (
-                  <UpcomingClassHero key={cls.id} cls={cls} lang={lang} />
+                  <UpcomingClassHero key={cls.id} cls={cls} lang={lang} attendee={attendee} />
                 ) : (
-                  <ClassCard key={cls.id} cls={cls} completed={false} />
+                  <ClassCard key={cls.id} cls={cls} completed={false} attendee={attendee} />
                 )
               )}
             </div>
@@ -1565,7 +1930,7 @@ function ClassesCard({
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {completedClasses.map((cls) => (
-                <ClassCard key={cls.id} cls={cls} completed={true} feedbackLabel={resolvedFeedbackLabel} feedbackPendingLabel={resolvedFeedbackPendingLabel} useEvaluationPage={useEvaluationPage} />
+                <ClassCard key={cls.id} cls={cls} completed={true} feedbackLabel={resolvedFeedbackLabel} feedbackPendingLabel={resolvedFeedbackPendingLabel} useEvaluationPage={useEvaluationPage} attendee={attendee} />
               ))}
             </div>
           )}
@@ -1585,6 +1950,10 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
 
   useEffect(() => {
     let cancelled = false;
+    function handleStoredUserUpdated(event: Event) {
+      setStoredUser((event as CustomEvent<StoredUser>).detail);
+    }
+    window.addEventListener(storedUserUpdatedEvent, handleStoredUserUpdated);
 
     async function loadStudentDashboard() {
       setStudentData(emptyStudentDashboardData);
@@ -1610,7 +1979,7 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
 
       const { data: classRows, error: classesError } = await supabase
         .from("classes")
-        .select("lesson_id, student_uid, teacher_uid, lesson_date, start_time, end_time, evaluation_completed")
+        .select("lesson_id, student_uid, teacher_uid, lesson_date, start_time, end_time, evaluation_completed, student_attended, teacher_attended, student_wants_to_share")
         .eq("student_uid", studentUid)
         .order("lesson_date", { ascending: true })
         .order("start_time", { ascending: true });
@@ -1713,7 +2082,7 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
         : undefined;
       const feedback = latestEvaluation && latestClass
         ? {
-            teacher: teacherNames.get(latestClass.teacher_uid) ?? latestClass.teacher_uid,
+            teacher: teacherNames.get(latestClass.teacher_uid)?.trim() || "Tutor",
             text: latestEvaluation.feedback,
             stars: latestEvaluation.stars,
             date: formatClassDate(latestEvaluation.created_at.slice(0, 10)),
@@ -1748,6 +2117,7 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
 
     return () => {
       cancelled = true;
+      window.removeEventListener(storedUserUpdatedEvent, handleStoredUserUpdated);
     };
   }, []);
 
@@ -1796,6 +2166,10 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
 
   useEffect(() => {
     let cancelled = false;
+    function handleStoredUserUpdated(event: Event) {
+      setStoredUser((event as CustomEvent<StoredUser>).detail);
+    }
+    window.addEventListener(storedUserUpdatedEvent, handleStoredUserUpdated);
 
     async function loadTutorDashboard() {
       setDashboardData(emptyTutorDashboardData);
@@ -1822,10 +2196,39 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
         return;
       }
 
+      const { data: tutorProfile, error: tutorProfileError } = await supabase
+        .from("profiles")
+        .select("uid, role, name, email")
+        .eq("uid", tutorUid)
+        .maybeSingle();
+
+      if (tutorProfileError || !tutorProfile) {
+        if (!cancelled) {
+          setDashboardData({
+            ...emptyTutorDashboardData,
+            loading: false,
+            error: tutorProfileError?.message || t("common.noTutorProfile"),
+          });
+        }
+        return;
+      }
+
+      const currentTutorName = tutorProfile.name;
+      if (!cancelled) {
+        const currentTutor = {
+          uid: tutorProfile.uid,
+          role: tutorProfile.role as AccountRole,
+          name: tutorProfile.name,
+          email: tutorProfile.email,
+        };
+        setStoredUser(currentTutor);
+        writeStoredUser(currentTutor);
+      }
+
       const now = new Date();
       const todayDate = formatDateForQuery(now);
       const currentTime = formatTimeForQuery(now);
-      const classColumns = "lesson_id, student_uid, teacher_uid, lesson_date, start_time, end_time, evaluation_completed";
+      const classColumns = "lesson_id, student_uid, teacher_uid, lesson_date, start_time, end_time, evaluation_completed, student_attended, teacher_attended, student_wants_to_share";
 
       const { data: allClassRowsData, error: allClassRowsError } = await supabase
         .from("classes")
@@ -1900,12 +2303,12 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
       const classes = [...completedClassRows, ...upcomingClassRows];
       const studentUids = Array.from(new Set(classes.map((cls) => cls.student_uid)));
       const completedStudentUids = Array.from(new Set(completedClassRows.map((cls) => cls.student_uid)));
-      const studentNames = new Map<string, string>();
+      const studentProfiles = new Map<string, BasicProfile>();
 
       if (studentUids.length > 0) {
         const { data: profiles, error: profilesError } = await supabase
           .from("profiles")
-          .select("uid, name")
+          .select("uid, name, email, wechat_id")
           .in("uid", studentUids);
 
         if (profilesError) {
@@ -1919,8 +2322,8 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
           return;
         }
 
-        profiles?.forEach((profile) => {
-          studentNames.set(profile.uid, profile.name);
+        ((profiles ?? []) as BasicProfile[]).forEach((profile) => {
+          studentProfiles.set(profile.uid, profile);
         });
       }
 
@@ -1952,8 +2355,8 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
           }
         : undefined;
 
-      const completedUiClasses = completedClassRows.map((cls) => toUIClass(cls, studentNames, tutorName, meetingDetails));
-      const upcomingUiClasses = upcomingClassRows.map((cls) => toUIClass(cls, studentNames, tutorName, meetingDetails));
+      const completedUiClasses = completedClassRows.map((cls) => toUIClass(cls, studentProfiles, currentTutorName, meetingDetails));
+      const upcomingUiClasses = upcomingClassRows.map((cls) => toUIClass(cls, studentProfiles, currentTutorName, meetingDetails));
       const byStartTime = (a: UIClass, b: UIClass) => a.startsAt.getTime() - b.startsAt.getTime();
       const totalVolunteerMinutes = ((volunteerRecords ?? []) as VolunteerRecordRow[]).reduce(
         (total, record) => total + record.minutes,
@@ -1982,6 +2385,7 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
 
     return () => {
       cancelled = true;
+      window.removeEventListener(storedUserUpdatedEvent, handleStoredUserUpdated);
     };
   }, []);
 
@@ -2026,6 +2430,7 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
         completedClasses={dashboardData.completedClasses}
         loading={dashboardData.loading}
         useEvaluationPage
+        attendee="teacher"
       />
     </div>
   );
@@ -2040,25 +2445,42 @@ export function AppShell({
   dashboardHref = "/student-dashboard",
   scheduleHref = "/student-schedule",
   recordHref,
+  trainingHref,
+  volunteerAwardHref,
+  studentMaterialsHref,
+  manageMediaHref,
+  requiredRole,
 }: {
-  activePage: "dashboard" | "schedule" | "record";
+  activePage: "dashboard" | "schedule" | "record" | "training" | "awards" | "studentMaterials" | "manageMedia";
   children: (lang: string) => ReactNode;
   user?: typeof STUDENT;
   dashboardHref?: string;
   scheduleHref?: string | null;
   recordHref?: string;
+  trainingHref?: string;
+  volunteerAwardHref?: string;
+  studentMaterialsHref?: string;
+  manageMediaHref?: string;
+  requiredRole?: AccountRole;
 }) {
   return (
     <LanguageProvider>
-      <AppShellContent
-        activePage={activePage}
-        user={user}
-        dashboardHref={dashboardHref}
-        scheduleHref={scheduleHref}
-        recordHref={recordHref}
-      >
-        {children}
-      </AppShellContent>
+      <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">Loading...</div>}>
+        <AppShellContent
+          activePage={activePage}
+          user={user}
+          dashboardHref={dashboardHref}
+          scheduleHref={scheduleHref}
+          recordHref={recordHref}
+          trainingHref={trainingHref}
+          volunteerAwardHref={volunteerAwardHref}
+          studentMaterialsHref={studentMaterialsHref}
+          manageMediaHref={manageMediaHref}
+          requiredRole={requiredRole}
+        >
+          {children}
+        </AppShellContent>
+      </Suspense>
     </LanguageProvider>
   );
 }
@@ -2070,17 +2492,32 @@ function AppShellContent({
   dashboardHref,
   scheduleHref,
   recordHref,
+  trainingHref,
+  volunteerAwardHref,
+  studentMaterialsHref,
+  manageMediaHref,
+  requiredRole,
 }: {
-  activePage: "dashboard" | "schedule" | "record";
+  activePage: "dashboard" | "schedule" | "record" | "training" | "awards" | "studentMaterials" | "manageMedia";
   children: (lang: string) => ReactNode;
   user: typeof STUDENT;
   dashboardHref: string;
   scheduleHref?: string | null;
   recordHref?: string;
+  trainingHref?: string;
+  volunteerAwardHref?: string;
+  studentMaterialsHref?: string;
+  manageMediaHref?: string;
+  requiredRole?: AccountRole;
 }) {
   const { lang } = useLanguage();
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const searchString = searchParams.toString();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [storedUser, setStoredUser] = useState<StoredUser | null>(null);
+  const [authChecked, setAuthChecked] = useState(!requiredRole);
   const navUser = {
     ...user,
     name: storedUser?.name || user.name,
@@ -2088,22 +2525,106 @@ function AppShellContent({
   };
 
   useEffect(() => {
-    setStoredUser(readStoredUser());
-  }, []);
+    let cancelled = false;
+    if (requiredRole) {
+      setAuthChecked(false);
+    }
+
+    function handleStoredUserUpdated(event: Event) {
+      setStoredUser((event as CustomEvent<StoredUser>).detail);
+    }
+    window.addEventListener(storedUserUpdatedEvent, handleStoredUserUpdated);
+
+    async function checkAccess() {
+      const cachedUser = readStoredUser();
+      if (!cancelled) {
+        setStoredUser(cachedUser);
+      }
+
+      if (!requiredRole) {
+        if (!cancelled) setAuthChecked(true);
+        return;
+      }
+
+      const currentPath = `${pathname}${searchString ? `?${searchString}` : ""}`;
+      const signInPath = `/?redirectTo=${encodeURIComponent(currentPath)}`;
+      const { data: authData, error: authError } = await supabase.auth.getUser();
+
+      if (authError || !authData.user) {
+        clearStoredAuthState();
+        router.replace(signInPath);
+        return;
+      }
+
+      const { data: profile, error: profileError } = await supabase
+        .from("profiles")
+        .select("uid, role, name, email")
+        .eq("uid", authData.user.id)
+        .maybeSingle();
+
+      if (profileError || !profile) {
+        router.replace(signInPath);
+        return;
+      }
+
+      if (profile.role !== requiredRole) {
+        await supabase.auth.signOut();
+        clearStoredAuthState();
+        router.replace(signInPath);
+        return;
+      }
+
+      const currentUser = {
+        uid: profile.uid,
+        role: profile.role as AccountRole,
+        name: profile.name,
+        email: profile.email,
+      };
+      writeStoredUser(currentUser);
+
+      if (!cancelled) {
+        setStoredUser(currentUser);
+        setAuthChecked(true);
+      }
+    }
+
+    void checkAccess();
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener(storedUserUpdatedEvent, handleStoredUserUpdated);
+    };
+  }, [pathname, requiredRole, router, searchString]);
+
+  if (!authChecked) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">
+        Loading...
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-screen flex-col bg-background md:h-screen md:overflow-hidden">
-      <TopNav user={navUser} onMenuClick={() => setSidebarOpen(true)} />
+      <TopNav
+        user={navUser}
+        onMenuClick={() => setSidebarOpen(true)}
+        onUserUpdated={setStoredUser}
+      />
       <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
         <Sidebar
           active={activePage}
           dashboardHref={dashboardHref}
           scheduleHref={scheduleHref}
           recordHref={recordHref}
+          trainingHref={trainingHref}
+          volunteerAwardHref={volunteerAwardHref}
+          studentMaterialsHref={studentMaterialsHref}
+          manageMediaHref={manageMediaHref}
           open={sidebarOpen}
           onClose={() => setSidebarOpen(false)}
         />
-        <main className={`min-w-0 flex-1 p-4 sm:p-6 ${activePage === "schedule" ? "flex flex-col overflow-y-auto md:overflow-hidden" : "overflow-y-auto"}`}>
+        <main key={pathname} className={`min-w-0 flex-1 p-4 sm:p-6 ${activePage === "schedule" ? "flex flex-col overflow-y-auto md:overflow-hidden" : "overflow-y-auto"}`}>
           {children(lang)}
         </main>
       </div>
@@ -2113,7 +2634,7 @@ function AppShellContent({
 
 export function StudentScheduleApp() {
   return (
-    <AppShell activePage="schedule">
+    <AppShell activePage="schedule" studentMaterialsHref="/student-materials" requiredRole="student">
       {(lang) => <StudentSchedulePage lang={lang} />}
     </AppShell>
   );
@@ -2121,7 +2642,7 @@ export function StudentScheduleApp() {
 
 export function TutorApp() {
   return (
-    <AppShell activePage="dashboard" user={TUTOR} dashboardHref="/tutor-dashboard" scheduleHref="/tutor-schedule" recordHref="/volunteer-record">
+    <AppShell activePage="dashboard" user={TUTOR} dashboardHref="/tutor-dashboard" scheduleHref="/tutor-schedule" recordHref="/volunteer-record" trainingHref="/training-materials" volunteerAwardHref="/volunteer-awards" requiredRole="tutor">
       {(lang) => <TutorDashboardPage lang={lang} />}
     </AppShell>
   );
@@ -2129,7 +2650,7 @@ export function TutorApp() {
 
 export function TutorScheduleApp() {
   return (
-    <AppShell activePage="schedule" user={TUTOR} dashboardHref="/tutor-dashboard" scheduleHref="/tutor-schedule" recordHref="/volunteer-record">
+    <AppShell activePage="schedule" user={TUTOR} dashboardHref="/tutor-dashboard" scheduleHref="/tutor-schedule" recordHref="/volunteer-record" trainingHref="/training-materials" volunteerAwardHref="/volunteer-awards" requiredRole="tutor">
       {(lang) => <TutorSchedulePage lang={lang} />}
     </AppShell>
   );
@@ -2137,23 +2658,55 @@ export function TutorScheduleApp() {
 
 export function VolunteerRecordApp() {
   return (
-    <AppShell activePage="record" user={TUTOR} dashboardHref="/tutor-dashboard" scheduleHref="/tutor-schedule" recordHref="/volunteer-record">
+    <AppShell activePage="record" user={TUTOR} dashboardHref="/tutor-dashboard" scheduleHref="/tutor-schedule" recordHref="/volunteer-record" trainingHref="/training-materials" volunteerAwardHref="/volunteer-awards" requiredRole="tutor">
       {(lang) => <VolunteerRecordPage lang={lang} />}
+    </AppShell>
+  );
+}
+
+export function TrainingMaterialsApp() {
+  return (
+    <AppShell activePage="training" user={TUTOR} dashboardHref="/tutor-dashboard" scheduleHref="/tutor-schedule" recordHref="/volunteer-record" trainingHref="/training-materials" volunteerAwardHref="/volunteer-awards" requiredRole="tutor">
+      {() => <MediaListPage category="tutor_training" titleKey="media.tutorTrainingTitle" helpKey="media.tutorTrainingHelp" />}
+    </AppShell>
+  );
+}
+
+export function VolunteerAwardsApp() {
+  return (
+    <AppShell activePage="awards" user={TUTOR} dashboardHref="/tutor-dashboard" scheduleHref="/tutor-schedule" recordHref="/volunteer-record" trainingHref="/training-materials" volunteerAwardHref="/volunteer-awards" requiredRole="tutor">
+      {() => <MediaListPage category="volunteer_award" titleKey="media.volunteerAwardTitle" helpKey="media.volunteerAwardHelp" />}
+    </AppShell>
+  );
+}
+
+export function StudentMaterialsApp() {
+  return (
+    <AppShell activePage="studentMaterials" studentMaterialsHref="/student-materials" requiredRole="student">
+      {() => <MediaListPage category="student_material" titleKey="media.studentMaterialTitle" helpKey="media.studentMaterialHelp" />}
     </AppShell>
   );
 }
 
 export function AdminApp() {
   return (
-    <AppShell activePage="dashboard" user={ADMIN} dashboardHref="/admin-dashboard" scheduleHref={null}>
+    <AppShell activePage="dashboard" user={ADMIN} dashboardHref="/admin-dashboard" scheduleHref={null} manageMediaHref="/admin-media" requiredRole="admin">
       {(lang) => <AdminDashboardPage lang={lang} />}
+    </AppShell>
+  );
+}
+
+export function ManageMediaApp() {
+  return (
+    <AppShell activePage="manageMedia" user={ADMIN} dashboardHref="/admin-dashboard" scheduleHref={null} manageMediaHref="/admin-media" requiredRole="admin">
+      {() => <ManageMediaPage />}
     </AppShell>
   );
 }
 
 export default function App() {
   return (
-    <AppShell activePage="dashboard">
+    <AppShell activePage="dashboard" studentMaterialsHref="/student-materials" requiredRole="student">
       {(lang) => <StudentDashboardPage lang={lang} />}
     </AppShell>
   );

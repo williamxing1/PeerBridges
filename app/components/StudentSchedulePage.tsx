@@ -12,12 +12,13 @@ function getWeekendDates() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const dayOfWeek = today.getDay();
+  const afterStudentCutoff = dayOfWeek === 6 || dayOfWeek === 0;
   const daysUntilSat = (6 - dayOfWeek + 7) % 7 || 7;
   const sat = new Date(today);
   sat.setDate(today.getDate() + daysUntilSat);
   const sun = new Date(sat);
   sun.setDate(sat.getDate() + 1);
-  return { sat, sun };
+  return { sat, sun, afterStudentCutoff };
 }
 
 const SLOT_TIMES = [
@@ -59,6 +60,37 @@ function dbTime(slotIdx: number, ends = false) {
   if (period === "AM" && hours === 12) hours = 0;
 
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:00`;
+}
+
+function parseSlotTime(time: string) {
+  const [hourPart, minutePart, period] = time.match(/(\d+):(\d+) (AM|PM)/)?.slice(1) ?? [];
+  let hours = Number(hourPart);
+  const minutes = Number(minutePart);
+
+  if (period === "PM" && hours !== 12) hours += 12;
+  if (period === "AM" && hours === 12) hours = 0;
+
+  return { hours, minutes };
+}
+
+function beijingSlotInstant(date: Date, slotIdx: number, ends = false) {
+  const { hours, minutes } = parseSlotTime(ends ? SLOT_ENDS[slotIdx] : SLOT_TIMES[slotIdx]);
+  return new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate(), hours - 8, minutes, 0));
+}
+
+function formatLocalTime(date: Date, lang: string) {
+  return date.toLocaleTimeString(lang === "zh" ? "zh-CN" : "en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function formatLocalSlotRange(date: Date, slotIdx: number, lang: string) {
+  return `${formatLocalTime(beijingSlotInstant(date, slotIdx), lang)} - ${formatLocalTime(beijingSlotInstant(date, slotIdx, true), lang)}`;
+}
+
+function formatLocalSlotDate(date: Date, lang: string) {
+  return formatDate(beijingSlotInstant(date, 0), lang);
 }
 
 function availabilityColumn(day: Day, slotIdx: number) {
@@ -146,17 +178,19 @@ type PastTeacher = {
 function SlotButton({
   slotIdx,
   day,
+  date,
   available,
   selection,
   onSelect,
 }: {
   slotIdx: number;
   day: Day;
+  date: Date;
   available: boolean;
   selection: Selection | null;
   onSelect: (day: Day, slotIdx: number) => void;
 }) {
-  const { t } = useLanguage();
+  const { lang, t } = useLanguage();
   const isSelected =
     selection?.day === day && selection.slots.includes(slotIdx);
   const isFirstSelected =
@@ -186,7 +220,7 @@ function SlotButton({
       onClick={() => available && onSelect(day, slotIdx)}
       className={`w-full border text-xs px-3 py-2.5 transition-all flex items-center justify-between ${stateClass} ${topRadius} ${bottomRadius} ${marginClass}`}
     >
-      <span>{SLOT_TIMES[slotIdx]}</span>
+      <span>{formatLocalSlotRange(date, slotIdx, lang)}</span>
       {available && !isSelected && (
         <span className="opacity-40 text-[10px]">{t("common.available")}</span>
       )}
@@ -219,14 +253,15 @@ function DayColumn({
   return (
     <div className="flex flex-col gap-1.5">
       <div className="mb-2">
-        <p className="text-card-foreground text-sm">{day === "sat" ? t("common.saturday") : t("common.sunday")}</p>
-        <p className="text-xs text-muted-foreground">{formatDate(date, lang)}</p>
+        <p className="text-card-foreground text-sm">{formatLocalSlotDate(date, lang)}</p>
+        <p className="text-xs text-muted-foreground">{day === "sat" ? t("common.saturday") : t("common.sunday")} · Beijing</p>
       </div>
       {SLOT_TIMES.map((_, idx) => (
         <SlotButton
           key={idx}
           slotIdx={idx}
           day={day}
+          date={date}
           available={availability.includes(idx)}
           selection={selection}
           onSelect={onSelect}
@@ -262,8 +297,8 @@ function BookingPanel({
   const startSlot = selection.slots[0];
   const endSlot = selection.slots[selection.slots.length - 1];
   const duration = selection.slots.length === 2 ? t("common.oneHour") : t("common.thirtyMinutes");
-  const timeRange = `${SLOT_TIMES[startSlot]} – ${SLOT_ENDS[endSlot]}`;
-  const dateLabel = formatDate(date, lang);
+  const timeRange = `${formatLocalTime(beijingSlotInstant(date, startSlot), lang)} – ${formatLocalTime(beijingSlotInstant(date, endSlot, true), lang)}`;
+  const dateLabel = formatLocalSlotDate(date, lang);
 
   if (confirmed) {
     return (
@@ -593,6 +628,9 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
           <h2 className="text-foreground">{t("schedule.studentTitle")}</h2>
           <p className="text-sm text-muted-foreground mt-0.5">
             {t("schedule.studentHelp")}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {t(weekendDates.afterStudentCutoff ? "schedule.studentCutoffActiveNote" : "schedule.timezoneNote")}
           </p>
         </div>
 

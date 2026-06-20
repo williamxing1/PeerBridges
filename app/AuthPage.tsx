@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import * as Select from "@radix-ui/react-select";
 import { BookOpen, Check, ChevronDown } from "lucide-react";
 import { supabase } from "../lib/supabase/client";
@@ -312,6 +312,8 @@ function AuthPageContent() {
   const [role, setRole] = useState<Role>("student");
   const { lang, t } = useLanguage();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const redirectTo = searchParams.get("redirectTo") || "";
   const titleRoleKey = roleOptions.find((option) => option.id === role)?.labelKey;
   const titleRole = titleRoleKey ? t(titleRoleKey) : "";
 
@@ -328,9 +330,84 @@ function AuthPageContent() {
     return "/admin-dashboard";
   }
 
-  function storeUser(user: StoredUser) {
-    sessionStorage.setItem(storedUserKey, JSON.stringify(user));
+  function normalizeRole(nextRole: Role | "admin") {
+    return nextRole === "administrator" ? "admin" : nextRole;
   }
+
+  function roleCanVisitPath(nextRole: Role | "admin", path: string) {
+    const normalizedRole = normalizeRole(nextRole);
+    if (normalizedRole === "student") {
+      return path === "/student-dashboard" || path === "/student-schedule" || path === "/student-materials";
+    }
+    if (normalizedRole === "tutor") {
+      return (
+        path === "/tutor-dashboard" ||
+        path === "/tutor-schedule" ||
+        path === "/volunteer-record" ||
+        path === "/training-materials" ||
+        path === "/volunteer-awards" ||
+        path.startsWith("/evaluations/")
+      );
+    }
+    return path === "/admin-dashboard" || path === "/admin-media";
+  }
+
+  function getPostAuthPath(nextRole: Role | "admin") {
+    if (redirectTo) {
+      try {
+        const parsed = new URL(redirectTo, window.location.origin);
+        const target = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+        if (parsed.origin === window.location.origin && roleCanVisitPath(nextRole, parsed.pathname)) {
+          return target;
+        }
+      } catch {
+        // Fall back to the role dashboard below.
+      }
+    }
+
+    const normalizedRole = normalizeRole(nextRole);
+    if (normalizedRole === "student") return "/student-dashboard";
+    if (normalizedRole === "tutor") return "/tutor-dashboard";
+    return "/admin-dashboard";
+  }
+
+  function storeUser(user: StoredUser) {
+    const serialized = JSON.stringify(user);
+    sessionStorage.setItem(storedUserKey, serialized);
+    localStorage.setItem(storedUserKey, serialized);
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function redirectExistingSession() {
+      const { data } = await supabase.auth.getUser();
+      if (!data.user) return;
+
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("uid, role, name, email, wechat_id")
+        .eq("uid", data.user.id)
+        .maybeSingle();
+
+      if (!profile || cancelled) return;
+
+      storeUser({
+        uid: profile.uid,
+        role: profile.role,
+        name: profile.name,
+        email: profile.email,
+        wechatId: profile.wechat_id,
+      });
+      router.replace(getPostAuthPath(profile.role));
+    }
+
+    void redirectExistingSession();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [redirectTo, router]);
 
   function pushRegisteredUser(userId: string) {
     storeUser({
@@ -352,7 +429,7 @@ function AuthPageContent() {
       howFoundOut,
     });
 
-    router.push(getDashboardPath(role));
+    router.push(getPostAuthPath(role));
   }
 
   return (
@@ -416,11 +493,16 @@ function AuthPageContent() {
 
                 const user = data.user;
 
-                const { data: profile } = await supabase
+                const { data: profile, error: profileError } = await supabase
                   .from("profiles")
                   .select("*")
                   .eq("uid", user.id)
                   .single();
+
+                if (profileError || !profile) {
+                  setError(profileError?.message || t("auth.authUserError"));
+                  return;
+                }
 
                 storeUser({
                   uid: user.id,
@@ -430,7 +512,7 @@ function AuthPageContent() {
                   wechatId: profile.wechat_id,
                 });
 
-                router.push(getDashboardPath(profile.role === "admin" ? "administrator" : profile.role));
+                router.push(getPostAuthPath(profile.role));
               } else if (mode === "register") {
                 const { data, error } = await supabase.auth.signUp({
                   email: normalizedEmail,
@@ -589,7 +671,9 @@ function AuthPageContent() {
 export default function AuthPage() {
   return (
     <LanguageProvider>
-      <AuthPageContent />
+      <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">Loading...</div>}>
+        <AuthPageContent />
+      </Suspense>
     </LanguageProvider>
   );
 }

@@ -80,19 +80,21 @@ function readStoredUser() {
 }
 
 function getClassDateTime(date: string, time: string) {
-  return new Date(`${date}T${time}`);
+  const [year, month, day] = date.split("-").map(Number);
+  const [hours, minutes, seconds = 0] = time.split(":").map(Number);
+  return new Date(Date.UTC(year, month - 1, day, hours - 8, minutes, seconds));
 }
 
-function formatClassDate(date: string) {
-  return new Date(`${date}T00:00:00`).toLocaleDateString("en-US", {
+function formatClassDate(date: Date) {
+  return date.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
   });
 }
 
-function formatClassTime(time: string) {
-  return new Date(`1970-01-01T${time}`).toLocaleTimeString("en-US", {
+function formatClassTime(date: Date) {
+  return date.toLocaleTimeString("en-US", {
     hour: "numeric",
     minute: "2-digit",
   });
@@ -223,8 +225,8 @@ export function EvaluationPage({ classId }: { classId: string }) {
           student: studentName,
           studentUid: cls.student_uid,
           teacherUid: cls.teacher_uid,
-          date: formatClassDate(cls.lesson_date),
-          time: `${formatClassTime(cls.start_time)} - ${formatClassTime(cls.end_time)}`,
+          date: formatClassDate(getClassDateTime(cls.lesson_date, cls.start_time)),
+          time: `${formatClassTime(getClassDateTime(cls.lesson_date, cls.start_time))} - ${formatClassTime(getClassDateTime(cls.lesson_date, cls.end_time))}`,
           minutes: getClassMinutes(cls),
           evaluationCompleted: cls.evaluation_completed,
         });
