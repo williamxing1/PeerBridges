@@ -43,25 +43,6 @@ function formatDate(d: Date, lang: string = "en") {
   return d.toLocaleDateString(lang === "zh" ? "zh-CN" : "en-US", { weekday: "long", month: "long", day: "numeric" });
 }
 
-function formatDbDate(d: Date) {
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function dbTime(slotIdx: number, ends = false) {
-  const time = ends ? SLOT_ENDS[slotIdx] : SLOT_TIMES[slotIdx];
-  const [hourPart, minutePart, period] = time.match(/(\d+):(\d+) (AM|PM)/)?.slice(1) ?? [];
-  let hours = Number(hourPart);
-  const minutes = Number(minutePart);
-
-  if (period === "PM" && hours !== 12) hours += 12;
-  if (period === "AM" && hours === 12) hours = 0;
-
-  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:00`;
-}
-
 function parseSlotTime(time: string) {
   const [hourPart, minutePart, period] = time.match(/(\d+):(\d+) (AM|PM)/)?.slice(1) ?? [];
   let hours = Number(hourPart);
@@ -91,6 +72,10 @@ function formatLocalSlotRange(date: Date, slotIdx: number, lang: string) {
 
 function formatLocalSlotDate(date: Date, lang: string) {
   return formatDate(beijingSlotInstant(date, 0), lang);
+}
+
+function currentTimeZoneLabel() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "local time";
 }
 
 function availabilityColumn(day: Day, slotIdx: number) {
@@ -147,6 +132,7 @@ type Availability = Record<Day, number[]>;
 type StoredUser = { uid: string };
 type TutorProfileRow = {
   uid: string;
+  grade: string;
   grades_to_tutor: string;
 } & Record<string, boolean | null | string>;
 type ProfileRow = {
@@ -157,13 +143,14 @@ type ClassRow = {
   lesson_id: string;
   student_uid: string;
   teacher_uid: string;
-  lesson_date: string;
-  start_time: string;
-  end_time: string;
-};
+  time: string;
+    duration: number;
+    status?: string | null;
+  };
 type TutorOption = {
   id: string;
   name: string;
+  grade: string;
   gradesToTutor: string;
   availability: Availability;
 };
@@ -172,6 +159,45 @@ type PastTeacher = {
   name: string;
   count: number;
 };
+
+function classEndsAt(cls: ClassRow) {
+  return new Date(new Date(cls.time).getTime() + cls.duration * 60000);
+}
+
+function slotIndexForInstant(date: Date, instant: Date) {
+  return Math.round((instant.getTime() - beijingSlotInstant(date, 0).getTime()) / 1800000);
+}
+
+function removeBookedSlots(
+  availability: Availability,
+  bookedClasses: ClassRow[],
+  weekendDates: { sat: Date; sun: Date }
+) {
+  const next: Availability = {
+    sat: [...availability.sat],
+    sun: [...availability.sun],
+  };
+
+  bookedClasses.forEach((cls) => {
+    if (cls.status === "cancelled") return;
+
+    const startsAt = new Date(cls.time);
+    const sunStart = beijingSlotInstant(weekendDates.sun, 0);
+    const day: Day = startsAt < sunStart ? "sat" : "sun";
+    const dayDate = day === "sat" ? weekendDates.sat : weekendDates.sun;
+    const startIdx = slotIndexForInstant(dayDate, startsAt);
+    const slots = cls.duration / 30;
+
+    for (let offset = 0; offset < slots; offset += 1) {
+      const slotIdx = startIdx + offset;
+      if (Number.isInteger(slotIdx) && slotIdx >= 0 && slotIdx < SLOT_TIMES.length) {
+        next[day] = next[day].filter((idx) => idx !== slotIdx);
+      }
+    }
+  });
+
+  return next;
+}
 
 // ─── SLOT BUTTON ──────────────────────────────────────────────────────────────
 
@@ -250,11 +276,12 @@ function DayColumn({
   onSelect: (day: Day, slotIdx: number) => void;
 }) {
   const { lang, t } = useLanguage();
+  const timeZone = currentTimeZoneLabel();
   return (
     <div className="flex flex-col gap-1.5">
       <div className="mb-2">
         <p className="text-card-foreground text-sm">{formatLocalSlotDate(date, lang)}</p>
-        <p className="text-xs text-muted-foreground">{day === "sat" ? t("common.saturday") : t("common.sunday")} · Beijing</p>
+        <p className="text-xs text-muted-foreground">{day === "sat" ? t("common.saturday") : t("common.sunday")} · {timeZone}</p>
       </div>
       {SLOT_TIMES.map((_, idx) => (
         <SlotButton
@@ -285,11 +312,12 @@ function BookingPanel({
   tutor: TutorOption;
   weekendDates: { sat: Date; sun: Date };
   onClose: () => void;
-  onConfirm: () => Promise<boolean>;
+  onConfirm: (recurring: boolean) => Promise<boolean>;
   lang: string;
 }) {
   const { t } = useLanguage();
   const [note, setNote] = useState("");
+  const [recurring, setRecurring] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -388,6 +416,21 @@ function BookingPanel({
             className="w-full bg-muted rounded-xl px-3.5 py-3 text-sm text-card-foreground placeholder:text-muted-foreground resize-none outline-none focus:ring-2 focus:ring-primary/30 transition-all"
           />
         </div>
+
+        <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-border bg-background p-3.5">
+          <input
+            type="checkbox"
+            checked={recurring}
+            onChange={(event) => setRecurring(event.target.checked)}
+            className="mt-0.5 h-4 w-4 rounded border-border text-primary"
+          />
+          <span>
+            <span className="block text-sm text-card-foreground">{t("schedule.recurringClass")}</span>
+            <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">
+              {t("schedule.recurringClassHelp")}
+            </span>
+          </span>
+        </label>
       </div>
 
       {/* Footer */}
@@ -395,7 +438,7 @@ function BookingPanel({
         <button
           onClick={async () => {
             setSaving(true);
-            const success = await onConfirm();
+            const success = await onConfirm(recurring);
             setSaving(false);
             if (success) {
               setConfirmed(true);
@@ -468,7 +511,7 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
       }
 
       const band = gradeBand(studentProfile.grade);
-      const availabilitySelect = ["uid", "grades_to_tutor", ...AVAILABILITY_COLUMNS].join(", ");
+      const availabilitySelect = ["uid", "grade", "grades_to_tutor", ...AVAILABILITY_COLUMNS].join(", ");
       const { data: tutorProfiles, error: tutorsError } = await supabase
         .from("tutor_profiles")
         .select(availabilitySelect);
@@ -485,6 +528,9 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
         .filter((profile) => matchesGradeBand(profile.grades_to_tutor, band));
       const tutorUids = matchingTutorProfiles.map((profile) => profile.uid);
       const profileNames = new Map<string, string>();
+      const weekendStart = beijingSlotInstant(weekendDates.sat, 0);
+      const weekendEnd = beijingSlotInstant(weekendDates.sun, SLOT_TIMES.length - 1, true);
+      const bookedClassesByTutor = new Map<string, ClassRow[]>();
 
       if (tutorUids.length > 0) {
         const { data: profiles, error: profileError } = await supabase
@@ -503,12 +549,36 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
         ((profiles ?? []) as ProfileRow[]).forEach((profile) => {
           profileNames.set(profile.uid, profile.name);
         });
+
+        const { data: bookedRows, error: bookedError } = await supabase
+          .from("classes")
+          .select("lesson_id, student_uid, teacher_uid, time, duration, status")
+          .in("teacher_uid", tutorUids)
+          .gte("time", weekendStart.toISOString())
+          .lt("time", weekendEnd.toISOString())
+          .or("status.is.null,status.neq.cancelled");
+
+        if (bookedError) {
+          if (!cancelled) {
+            setError(bookedError.message);
+            setLoading(false);
+          }
+          return;
+        }
+
+        ((bookedRows ?? []) as ClassRow[]).forEach((cls) => {
+          bookedClassesByTutor.set(cls.teacher_uid, [
+            ...(bookedClassesByTutor.get(cls.teacher_uid) ?? []),
+            cls,
+          ]);
+        });
       }
 
       const { data: classRows, error: classesError } = await supabase
         .from("classes")
-        .select("lesson_id, student_uid, teacher_uid, lesson_date, start_time, end_time")
-        .eq("student_uid", uid);
+        .select("lesson_id, student_uid, teacher_uid, time, duration, status")
+        .eq("student_uid", uid)
+        .or("status.is.null,status.neq.cancelled");
 
       if (classesError) {
         if (!cancelled) {
@@ -518,8 +588,10 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
         return;
       }
 
+      const completedClasses = ((classRows ?? []) as ClassRow[])
+        .filter((cls) => classEndsAt(cls) < new Date());
       const teacherCounts = new Map<string, number>();
-      ((classRows ?? []) as ClassRow[]).forEach((cls) => {
+      completedClasses.forEach((cls) => {
         teacherCounts.set(cls.teacher_uid, (teacherCounts.get(cls.teacher_uid) ?? 0) + 1);
       });
       const pastTeacherUids = Array.from(teacherCounts.keys()).filter((teacherUid) => !profileNames.has(teacherUid));
@@ -547,8 +619,13 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
         setTutors(matchingTutorProfiles.map((profile) => ({
           id: profile.uid,
           name: profileNames.get(profile.uid) ?? profile.uid,
+          grade: profile.grade,
           gradesToTutor: profile.grades_to_tutor,
-          availability: profileAvailability(profile),
+          availability: removeBookedSlots(
+            profileAvailability(profile),
+            bookedClassesByTutor.get(profile.uid) ?? [],
+            weekendDates
+          ),
         })));
         setPastTeachers(Array.from(teacherCounts.entries())
           .map(([uid, count]) => ({ uid, count, name: profileNames.get(uid) ?? uid }))
@@ -594,21 +671,83 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
     setSelection(null);
   }
 
-  async function confirmBooking() {
+  async function confirmBooking(recurring: boolean) {
     if (!selection || !tutor || !studentUid) return false;
 
     setError("");
 
-    const lessonDate = formatDbDate(weekendDates[selection.day]);
     const startSlot = selection.slots[0];
-    const endSlot = selection.slots[selection.slots.length - 1];
+    const duration = selection.slots.length === 2 ? 60 : 30;
+    const startsAt = beijingSlotInstant(weekendDates[selection.day], startSlot);
+    const endsAt = new Date(startsAt.getTime() + duration * 60000);
+    const overlapWindowStart = new Date(startsAt.getTime() - 60 * 60000);
+    const { data: overlappingRows, error: overlapError } = await supabase
+      .from("classes")
+      .select("lesson_id, student_uid, teacher_uid, time, duration, status")
+      .eq("teacher_uid", tutor.id)
+      .gte("time", overlapWindowStart.toISOString())
+      .lt("time", endsAt.toISOString())
+      .or("status.is.null,status.neq.cancelled");
+
+    if (overlapError) {
+      setError(overlapError.message);
+      return false;
+    }
+
+    const hasOverlap = ((overlappingRows ?? []) as ClassRow[]).some((cls) => {
+      const existingStart = new Date(cls.time);
+      const existingEnd = new Date(existingStart.getTime() + cls.duration * 60000);
+      return existingStart < endsAt && existingEnd > startsAt;
+    });
+
+    if (hasOverlap) {
+      setError(t("schedule.slotAlreadyBooked"));
+      setTutors((current) =>
+        current.map((item) =>
+          item.id === tutor.id
+            ? {
+                ...item,
+                availability: removeBookedSlots(
+                  item.availability,
+                  (overlappingRows ?? []) as ClassRow[],
+                  weekendDates
+                ),
+              }
+            : item
+        )
+      );
+      setSelection(null);
+      return false;
+    }
+
+    let recurringLessonId: string | null = null;
+
+    if (recurring) {
+      const { data: recurringRow, error: recurringError } = await supabase
+        .from("recurring_classes")
+        .insert({
+          student_uid: studentUid,
+          teacher_uid: tutor.id,
+          time: startsAt.toISOString(),
+          duration,
+        })
+        .select("lesson_id")
+        .single();
+
+      if (recurringError || !recurringRow) {
+        setError(recurringError?.message || t("schedule.slotAlreadyBooked"));
+        return false;
+      }
+
+      recurringLessonId = recurringRow.lesson_id;
+    }
+
     const { error: insertError } = await supabase.from("classes").insert({
       student_uid: studentUid,
       teacher_uid: tutor.id,
-      lesson_date: lessonDate,
-      start_time: dbTime(startSlot),
-      end_time: dbTime(endSlot, true),
-      evaluation_completed: false,
+      time: startsAt.toISOString(),
+      duration,
+      ...(recurringLessonId ? { recurring_lesson_id: recurringLessonId } : {}),
     });
 
     if (insertError) {
@@ -616,6 +755,35 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
       return false;
     }
 
+    if (recurringLessonId) {
+      const { error: generateError } = await supabase.rpc("generate_recurring_classes");
+
+      if (generateError) {
+        setError(generateError.message);
+        return false;
+      }
+    }
+
+    setTutors((current) =>
+      current.map((item) =>
+        item.id === tutor.id
+          ? {
+              ...item,
+              availability: removeBookedSlots(
+                item.availability,
+                [{
+                  lesson_id: "",
+                  student_uid: studentUid,
+                  teacher_uid: tutor.id,
+                  time: startsAt.toISOString(),
+                  duration,
+                }],
+                weekendDates
+              ),
+            }
+          : item
+      )
+    );
     return true;
   }
 
@@ -688,7 +856,7 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
                     <BlankAvatar size={28} />
                     <div className="flex-1 min-w-0">
                       <Select.ItemText>{t.name}</Select.ItemText>
-                      <p className="text-xs text-muted-foreground">{t.gradesToTutor}</p>
+                      <p className="text-xs text-muted-foreground">{t.grade}</p>
                     </div>
                   </Select.Item>
                 ))}

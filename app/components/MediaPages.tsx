@@ -28,13 +28,25 @@ function categoryLabel(category: MediaCategory, t: ReturnType<typeof useLanguage
   return t("media.categoryStudentMaterial");
 }
 
-function storageUrl(path: string) {
-  if (/^https?:\/\//i.test(path)) return path;
-
+function parseStoragePath(path: string) {
   const normalizedPath = path.replace(/^\/+/, "");
   const [firstSegment, ...rest] = normalizedPath.split("/");
-  const bucket = rest.length > 0 ? firstSegment : "media";
-  const objectPath = rest.length > 0 ? rest.join("/") : normalizedPath;
+
+  return {
+    bucket: rest.length > 0 ? firstSegment : "media",
+    objectPath: rest.length > 0 ? rest.join("/") : normalizedPath,
+  };
+}
+
+async function storageImageUrl(path: string) {
+  if (/^https?:\/\//i.test(path)) return path;
+
+  const { bucket, objectPath } = parseStoragePath(path);
+  const { data, error } = await supabase.storage.from(bucket).createSignedUrl(objectPath, 60 * 60);
+
+  if (!error && data?.signedUrl) {
+    return data.signedUrl;
+  }
 
   return supabase.storage.from(bucket).getPublicUrl(objectPath).data.publicUrl;
 }
@@ -75,12 +87,16 @@ export function MediaListPage({
       }
 
       if (!cancelled) {
-        setMaterials(
-          ((data ?? []) as MediaRow[]).map((material) => ({
+        const materialsWithImages = await Promise.all(
+          ((data ?? []) as MediaRow[]).map(async (material) => ({
             ...material,
-            coverImageUrl: storageUrl(material.cover_image_path),
+            coverImageUrl: await storageImageUrl(material.cover_image_path),
           }))
         );
+
+        if (cancelled) return;
+
+        setMaterials(materialsWithImages);
         setLoading(false);
       }
     }
@@ -119,15 +135,21 @@ export function MediaListPage({
           {materials.map((material) => (
             <article
               key={material.training_material_id}
-              className="flex min-h-[20rem] flex-col overflow-hidden rounded-2xl border border-border bg-card"
+              className="flex h-[24rem] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm"
             >
-              <div className="p-4">
-                <h3 className="line-clamp-2 text-sm text-card-foreground">{material.media_name}</h3>
+              <div className="flex items-center justify-center border-b border-border px-4 py-3 text-center">
+                <h3 className="line-clamp-2 text-base font-medium leading-snug text-card-foreground">
+                  {material.media_name}
+                </h3>
               </div>
-              <div className="mx-4 flex min-h-44 flex-1 items-center justify-center overflow-hidden rounded-xl border border-border bg-muted">
-                <img src={material.coverImageUrl} alt="" className="h-full min-h-44 w-full object-cover" />
+              <div className="mx-4 mt-4 flex h-44 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border bg-muted p-2">
+                <img
+                  src={material.coverImageUrl}
+                  alt=""
+                  className="max-h-full max-w-full object-contain"
+                />
               </div>
-              <div className="p-4">
+              <div className="mt-auto p-4">
                 <a
                   href={material.file_url}
                   target="_blank"

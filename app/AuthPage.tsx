@@ -1,10 +1,11 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import * as Select from "@radix-ui/react-select";
 import { BookOpen, Check, ChevronDown } from "lucide-react";
 import { supabase } from "../lib/supabase/client";
+import { countryOptionsForLang } from "./data/countries";
 import { LanguageProvider, LanguageSelect, optionLabel, useLanguage, type Lang, type TranslationKey } from "./i18n";
 
 type Mode = "login" | "register";
@@ -15,8 +16,7 @@ type StoredUser = {
   name: string;
   email: string;
   wechatId?: string;
-  province?: string;
-  city?: string;
+  country?: string;
   grade?: string;
   englishLevel?: string;
   referrer?: string;
@@ -38,8 +38,6 @@ const roleOptions: Array<{ id: Role; labelKey: TranslationKey }> = [
 
 const registerRoleOptions = roleOptions.filter((option) => option.id !== "administrator");
 
-const provinces = ["Ontario", "British Columbia", "Alberta", "Quebec", "California", "New York"];
-const cities = ["Toronto", "Vancouver", "Calgary", "Montreal", "Los Angeles", "New York City"];
 const teachers = ["Ivy Wong", "Dr. Sarah Mitchell", "Ms. Karen Liu"];
 const gradeOptions = ["Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6", "Grade 7", "Grade 8", "Grade 9", "Grade 10", "Grade 11", "Grade 12"];
 const englishLevels = ["Beginner", "Intermediate", "Advanced"];
@@ -129,6 +127,52 @@ function SelectField({
   );
 }
 
+function CountrySelect({
+  label,
+  placeholder,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  placeholder: string;
+  options: Array<{ value: string; label: string }>;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="block">
+      <span className="text-sm font-medium text-card-foreground">{label}</span>
+      <Select.Root value={value} onValueChange={onChange}>
+        <Select.Trigger className="mt-2 flex h-11 w-full items-center justify-between rounded-xl border border-border bg-background px-3.5 text-sm text-foreground outline-none transition data-[placeholder]:text-muted-foreground focus:border-primary/40 focus:bg-card">
+          <Select.Value placeholder={placeholder} />
+          <Select.Icon>
+            <ChevronDown size={16} className="text-muted-foreground" />
+          </Select.Icon>
+        </Select.Trigger>
+        <Select.Portal>
+          <Select.Content className="z-50 max-h-72 overflow-hidden rounded-xl border border-border bg-popover p-1 shadow-xl">
+            <Select.Viewport>
+              {options.map((option) => (
+                <Select.Item
+                  key={option.value}
+                  value={option.value}
+                  className="flex cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-sm text-popover-foreground outline-none data-[highlighted]:bg-accent"
+                >
+                  <Select.ItemText>{option.label}</Select.ItemText>
+                  <Select.ItemIndicator>
+                    <Check size={14} className="text-primary" />
+                  </Select.ItemIndicator>
+                </Select.Item>
+              ))}
+            </Select.Viewport>
+          </Select.Content>
+        </Select.Portal>
+      </Select.Root>
+    </label>
+  );
+}
+
 function RoleTabs({
   options,
   role,
@@ -173,10 +217,9 @@ type RegisterFieldsProps = LoginFieldsProps & {
   setName: (value: string) => void;
   wechatId: string;
   setWechatId: (value: string) => void;
-  province: string;
-  setProvince: (value: string) => void;
-  city: string;
-  setCity: (value: string) => void;
+  country: string;
+  setCountry: (value: string) => void;
+  countryOptions: Array<{ value: string; label: string }>;
   grade: string;
   setGrade: (value: string) => void;
   englishLevel: string;
@@ -200,7 +243,7 @@ type RegisterFieldsProps = LoginFieldsProps & {
 function LoginFields({ t, email, setEmail, password, setPassword }: LoginFieldsProps) {
   return (
     <div className="grid gap-4">
-      <Field label={t("auth.email")} type="email" placeholder="you@example.com" value={email} onChange={setEmail} />
+      <Field label={t("auth.email")} type="email" placeholder={t("auth.emailPlaceholder")} value={email} onChange={setEmail} />
       <Field label={t("auth.password")} type="password" placeholder={t("auth.enterPassword")} minLength={6} value={password} onChange={setPassword} />
     </div>
   );
@@ -216,10 +259,9 @@ function RegisterFields({
   setPassword,
   wechatId,
   setWechatId,
-  province,
-  setProvince,
-  city,
-  setCity,
+  country,
+  setCountry,
+  countryOptions,
   grade,
   setGrade,
   englishLevel,
@@ -247,11 +289,10 @@ function RegisterFields({
     return (
       <div className="grid gap-4 md:grid-cols-2">
         <Field label={t("auth.name")} placeholder={t("auth.studentName")} value={name} onChange={setName} />
-        <Field label={t("auth.email")} type="email" placeholder="student@example.com" value={email} onChange={setEmail} />
+        <Field label={t("auth.email")} type="email" placeholder={t("auth.studentEmailPlaceholder")} value={email} onChange={setEmail} />
         <Field label={t("auth.password")} type="password" placeholder={t("auth.createPassword")} minLength={6} value={password} onChange={setPassword} />
         <Field label={t("auth.wechatId")} placeholder={t("auth.wechatId")} value={wechatId} onChange={setWechatId} />
-        <SelectField label={t("auth.province")} placeholder={t("auth.selectProvince")} options={provinces} value={province} onChange={setProvince} getOptionLabel={labelOption} />
-        <SelectField label={t("auth.city")} placeholder={t("auth.selectCity")} options={cities} value={city} onChange={setCity} getOptionLabel={labelOption} />
+        <CountrySelect label={t("auth.country")} placeholder={t("auth.countryPlaceholder")} options={countryOptions} value={country} onChange={setCountry} />
         <SelectField label={t("auth.grade")} placeholder={t("auth.selectGrade")} options={gradeOptions} value={grade} onChange={setGrade} getOptionLabel={labelOption} />
         <SelectField label={t("auth.englishLevel")} placeholder={t("auth.selectLevel")} options={englishLevels} value={englishLevel} onChange={setEnglishLevel} getOptionLabel={labelOption} />
         <Field label={t("auth.referrer")} placeholder={t("auth.referrerPlaceholder")} value={referrer} onChange={setReferrer} />
@@ -264,7 +305,7 @@ function RegisterFields({
     return (
       <div className="grid gap-4 md:grid-cols-2">
         <Field label={t("auth.name")} placeholder={t("auth.tutorName")} value={name} onChange={setName} />
-        <Field label={t("auth.email")} type="email" placeholder="tutor@example.com" value={email} onChange={setEmail} />
+        <Field label={t("auth.email")} type="email" placeholder={t("auth.tutorEmailPlaceholder")} value={email} onChange={setEmail} />
         <Field label={t("auth.password")} type="password" placeholder={t("auth.createPassword")} minLength={6} value={password} onChange={setPassword} />
         <Field label={t("auth.wechatId")} placeholder={t("auth.wechatId")} value={wechatId} onChange={setWechatId} />
         <Field label={t("auth.school")} placeholder={t("auth.schoolName")} value={school} onChange={setSchool} />
@@ -280,7 +321,7 @@ function RegisterFields({
   return (
     <div className="grid gap-4 md:grid-cols-2">
       <Field label={t("auth.name")} placeholder={t("auth.administratorName")} value={name} onChange={setName} />
-      <Field label={t("auth.email")} type="email" placeholder="admin@example.com" value={email} onChange={setEmail} />
+      <Field label={t("auth.email")} type="email" placeholder={t("auth.adminEmailPlaceholder")} value={email} onChange={setEmail} />
       <Field label={t("auth.password")} type="password" placeholder={t("auth.createPassword")} minLength={6} value={password} onChange={setPassword} />
       <Field label={t("auth.wechatId")} placeholder={t("auth.wechatId")} value={wechatId} onChange={setWechatId} />
     </div>
@@ -288,13 +329,14 @@ function RegisterFields({
 }
 
 function AuthPageContent() {
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [registerEmail, setRegisterEmail] = useState("");
+  const [registerPassword, setRegisterPassword] = useState("");
   const [wechatId, setWechatId] = useState("");
 
-  const [province, setProvince] = useState("");
-  const [city, setCity] = useState("");
+  const [country, setCountry] = useState("");
   const [grade, setGrade] = useState("");
   const [englishLevel, setEnglishLevel] = useState("");
   const [referrer, setReferrer] = useState("");
@@ -307,6 +349,7 @@ function AuthPageContent() {
   const [howFoundOut, setHowFoundOut] = useState("");
 
   const [error, setError] = useState("");
+  const [checkingSession, setCheckingSession] = useState(true);
 
   const [mode, setMode] = useState<Mode>("login");
   const [role, setRole] = useState<Role>("student");
@@ -316,6 +359,7 @@ function AuthPageContent() {
   const redirectTo = searchParams.get("redirectTo") || "";
   const titleRoleKey = roleOptions.find((option) => option.id === role)?.labelKey;
   const titleRole = titleRoleKey ? t(titleRoleKey) : "";
+  const countryOptions = useMemo(() => countryOptionsForLang(lang), [lang]);
 
   function handleModeChange(nextMode: Mode) {
     setMode(nextMode);
@@ -337,7 +381,7 @@ function AuthPageContent() {
   function roleCanVisitPath(nextRole: Role | "admin", path: string) {
     const normalizedRole = normalizeRole(nextRole);
     if (normalizedRole === "student") {
-      return path === "/student-dashboard" || path === "/student-schedule" || path === "/student-materials";
+      return path === "/student-dashboard" || path === "/student-schedule" || path === "/student-materials" || path === "/student-communications";
     }
     if (normalizedRole === "tutor") {
       return (
@@ -346,10 +390,11 @@ function AuthPageContent() {
         path === "/volunteer-record" ||
         path === "/training-materials" ||
         path === "/volunteer-awards" ||
+        path === "/tutor-communications" ||
         path.startsWith("/evaluations/")
       );
     }
-    return path === "/admin-dashboard" || path === "/admin-media";
+    return path === "/admin-dashboard" || path === "/admin-media" || path === "/admin-communications";
   }
 
   function getPostAuthPath(nextRole: Role | "admin") {
@@ -382,7 +427,10 @@ function AuthPageContent() {
 
     async function redirectExistingSession() {
       const { data } = await supabase.auth.getUser();
-      if (!data.user) return;
+      if (!data.user) {
+        if (!cancelled) setCheckingSession(false);
+        return;
+      }
 
       const { data: profile } = await supabase
         .from("profiles")
@@ -390,7 +438,10 @@ function AuthPageContent() {
         .eq("uid", data.user.id)
         .maybeSingle();
 
-      if (!profile || cancelled) return;
+      if (!profile || cancelled) {
+        if (!cancelled) setCheckingSession(false);
+        return;
+      }
 
       storeUser({
         uid: profile.uid,
@@ -409,15 +460,22 @@ function AuthPageContent() {
     };
   }, [redirectTo, router]);
 
+  if (checkingSession) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">
+        {t("common.loading")}
+      </div>
+    );
+  }
+
   function pushRegisteredUser(userId: string) {
     storeUser({
       uid: userId,
       role,
       name,
-      email: email.trim(),
+      email: registerEmail.trim(),
       wechatId,
-      province,
-      city,
+      country,
       grade,
       englishLevel,
       referrer,
@@ -478,12 +536,12 @@ function AuthPageContent() {
             onSubmit={async (event) => {
               event.preventDefault();
               setError("");
-              const normalizedEmail = email.trim();
               
               if (mode === "login") {
+                const normalizedEmail = loginEmail.trim();
                 const { data, error } = await supabase.auth.signInWithPassword({
                   email: normalizedEmail,
-                  password,
+                  password: loginPassword,
                 });
 
                 if (error) {
@@ -514,9 +572,10 @@ function AuthPageContent() {
 
                 router.push(getPostAuthPath(profile.role));
               } else if (mode === "register") {
+                const normalizedEmail = registerEmail.trim();
                 const { data, error } = await supabase.auth.signUp({
                   email: normalizedEmail,
-                  password,
+                  password: registerPassword,
                 });
 
                 let userId = data.user?.id;
@@ -524,7 +583,7 @@ function AuthPageContent() {
                 if (error && isAlreadyRegisteredError(error.message)) {
                   const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
                     email: normalizedEmail,
-                    password,
+                    password: registerPassword,
                   });
 
                   if (signInError) {
@@ -564,8 +623,7 @@ function AuthPageContent() {
                 if (role === "student") {
                   const { error: studentProfileError } = await supabase.from("student_profiles").upsert({
                     uid: userId,
-                    province,
-                    city,
+                    country,
                     grade,
                     english_level: englishLevel,
                     referrer,
@@ -607,10 +665,10 @@ function AuthPageContent() {
                 <LoginFields
                   lang={lang}
                   t={t}
-                  email={email}
-                  setEmail={setEmail}
-                  password={password}
-                  setPassword={setPassword}
+                  email={loginEmail}
+                  setEmail={setLoginEmail}
+                  password={loginPassword}
+                  setPassword={setLoginPassword}
                 />
               ) : (
                 <RegisterFields
@@ -619,16 +677,15 @@ function AuthPageContent() {
                   t={t}
                   name={name}
                   setName={setName}
-                  email={email}
-                  setEmail={setEmail}
-                  password={password}
-                  setPassword={setPassword}
+                  email={registerEmail}
+                  setEmail={setRegisterEmail}
+                  password={registerPassword}
+                  setPassword={setRegisterPassword}
                   wechatId={wechatId}
                   setWechatId={setWechatId}
-                  province={province}
-                  setProvince={setProvince}
-                  city={city}
-                  setCity={setCity}
+                  country={country}
+                  setCountry={setCountry}
+                  countryOptions={countryOptions}
                   grade={grade}
                   setGrade={setGrade}
                   englishLevel={englishLevel}
@@ -668,10 +725,15 @@ function AuthPageContent() {
   );
 }
 
+function LoadingFallback() {
+  const { t } = useLanguage();
+  return <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">{t("common.loading")}</div>;
+}
+
 export default function AuthPage() {
   return (
     <LanguageProvider>
-      <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">Loading...</div>}>
+      <Suspense fallback={<LoadingFallback />}>
         <AuthPageContent />
       </Suspense>
     </LanguageProvider>

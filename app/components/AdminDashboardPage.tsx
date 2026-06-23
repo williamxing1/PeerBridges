@@ -9,7 +9,6 @@ import { useLanguage, type TranslationKey } from "../i18n";
 type PersonType = "student" | "tutor";
 
 const ALL_TIME_START = "2020-01-01";
-const ALL_TIME_END = "2026-06-09";
 
 type ProfileRow = {
   uid: string;
@@ -21,9 +20,9 @@ type ClassRow = {
   lesson_id: string;
   student_uid: string;
   teacher_uid: string;
-  lesson_date: string;
-  start_time: string;
-  end_time: string;
+  time: string;
+  duration: number;
+  status?: string | null;
 };
 type VolunteerRecordRow = {
   tutor_uid: string;
@@ -39,6 +38,27 @@ function parseDate(value: string) {
   return new Date(`${value}T00:00:00`);
 }
 
+function formatDateInput(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function todayInput() {
+  return formatDateInput(new Date());
+}
+
+function clampDateInput(value: string, max: string) {
+  return parseDate(value) > parseDate(max) ? max : value;
+}
+
+function oneMonthBeforeTodayInput() {
+  const date = new Date();
+  date.setMonth(date.getMonth() - 1);
+  return formatDateInput(date);
+}
+
 function formatDateLabel(value: string) {
   return parseDate(value).toLocaleDateString("en-US", {
     month: "short",
@@ -52,15 +72,15 @@ function endOfDay(value: string) {
 }
 
 function classStartsAt(cls: ClassRow) {
-  return new Date(`${cls.lesson_date}T${cls.start_time}`);
+  return new Date(cls.time);
 }
 
 function classEndsAt(cls: ClassRow) {
-  return new Date(`${cls.lesson_date}T${cls.end_time}`);
+  return new Date(classStartsAt(cls).getTime() + cls.duration * 60000);
 }
 
 function classMinutes(cls: ClassRow) {
-  return Math.max(0, Math.round((classEndsAt(cls).getTime() - classStartsAt(cls).getTime()) / 60000));
+  return cls.duration;
 }
 
 function hoursLabel(minutes: number) {
@@ -107,17 +127,18 @@ function intervalDates(start: string, end: string) {
   });
 }
 
-function growthPoints(start: string, end: string, profiles: ProfileRow[]) {
+function growthPoints(start: string, end: string, profiles: ProfileRow[], lang: string) {
   const interval = intervalLabel(start, end);
+  const locale = lang === "zh" ? "zh-CN" : "en-US";
   return intervalDates(start, end).map((date) => {
     return {
       label:
         interval === "Year"
           ? String(date.getFullYear())
           : interval === "Month"
-            ? date.toLocaleDateString("en-US", { month: "short" })
-            : date.toLocaleDateString("en-US", { weekday: "short" }),
-      value: profiles.filter((profile) => profile.created_at && new Date(profile.created_at) <= endOfDay(date.toISOString().slice(0, 10))).length,
+            ? date.toLocaleDateString(locale, { month: "short" })
+            : date.toLocaleDateString(locale, { weekday: "short" }),
+      value: profiles.filter((profile) => profile.created_at && new Date(profile.created_at) <= endOfDay(formatDateInput(date))).length,
     };
   });
 }
@@ -148,10 +169,12 @@ function CalendarInput({
   label,
   value,
   onChange,
+  max,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
+  max?: string;
 }) {
   const { lang, t } = useLanguage();
   const [open, setOpen] = useState(false);
@@ -169,7 +192,8 @@ function CalendarInput({
   function updateMonth(offset: number) {
     const next = parseDate(value);
     next.setMonth(next.getMonth() + offset);
-    onChange(next.toISOString().slice(0, 10));
+    const nextValue = formatDateInput(next);
+    onChange(max ? clampDateInput(nextValue, max) : nextValue);
   }
 
   useEffect(() => {
@@ -205,7 +229,12 @@ function CalendarInput({
             <p className="text-sm text-popover-foreground">
               {visibleDate.toLocaleDateString(lang === "zh" ? "zh-CN" : "en-US", { month: "long", year: "numeric" })}
             </p>
-            <button type="button" onClick={() => updateMonth(1)} className="rounded-lg px-2 py-1 text-sm hover:bg-accent">
+            <button
+              type="button"
+              onClick={() => updateMonth(1)}
+              disabled={max ? parseDate(formatDateInput(new Date(year, month + 1, 1))) > parseDate(max) : false}
+              className="rounded-lg px-2 py-1 text-sm hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+            >
               {t("common.next")}
             </button>
           </div>
@@ -220,13 +249,14 @@ function CalendarInput({
                   type="button"
                   onClick={() => {
                     const next = new Date(year, month, Number(day));
-                    onChange(next.toISOString().slice(0, 10));
+                    onChange(formatDateInput(next));
                     setOpen(false);
                   }}
+                  disabled={max ? new Date(year, month, Number(day)) > parseDate(max) : false}
                   className={`rounded-lg py-2 text-sm transition-colors ${
                     Number(day) === visibleDate.getDate()
                       ? "bg-primary text-primary-foreground"
-                      : "text-popover-foreground hover:bg-accent"
+                      : "text-popover-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
                   }`}
                 >
                   {day}
@@ -341,10 +371,11 @@ function SelectPerson({
 
 export function AdminDashboardPage({ lang }: { lang: string }) {
   const { t } = useLanguage();
-  const [startDate, setStartDate] = useState(ALL_TIME_START);
-  const [endDate, setEndDate] = useState(ALL_TIME_END);
-  const [personStart, setPersonStart] = useState(ALL_TIME_START);
-  const [personEnd, setPersonEnd] = useState(ALL_TIME_END);
+  const maxDate = todayInput();
+  const [startDate, setStartDate] = useState(oneMonthBeforeTodayInput);
+  const [endDate, setEndDate] = useState(todayInput);
+  const [personStart, setPersonStart] = useState(oneMonthBeforeTodayInput);
+  const [personEnd, setPersonEnd] = useState(todayInput);
   const [personType, setPersonType] = useState<PersonType>("student");
   const [selectedPerson, setSelectedPerson] = useState("");
   const [profiles, setProfiles] = useState<ProfileRow[]>([]);
@@ -363,9 +394,9 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
   const studentOptions = studentProfiles.map(({ uid, name }) => ({ uid, name }));
   const tutorOptions = tutorProfiles.map(({ uid, name }) => ({ uid, name }));
   const selectedOptions = personType === "student" ? studentOptions : tutorOptions;
-  const completedClasses = classes.filter((cls) => classEndsAt(cls) < now);
+  const completedClasses = classes.filter((cls) => classEndsAt(cls) <= now);
   const allTimeVolunteerMinutes = volunteerRecords.reduce((total, record) => total + record.minutes, 0);
-  const periodClasses = classes.filter((cls) => inDateRange(parseDate(cls.lesson_date), startDate, endDate));
+  const periodClasses = completedClasses.filter((cls) => inDateRange(classStartsAt(cls), startDate, endDate));
   const periodStudentUids = Array.from(new Set(periodClasses.map((cls) => cls.student_uid)));
   const periodTutorUids = Array.from(new Set(periodClasses.map((cls) => cls.teacher_uid)));
   const periodVolunteerMinutes = volunteerRecords
@@ -378,14 +409,14 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
   const missingTutors = tutorUids
     .filter((uid) => !periodTutorUids.includes(uid))
     .map((uid) => ({ uid, name: profileName.get(uid) ?? uid }));
-  const studentGrowth = useMemo(() => growthPoints(startDate, endDate, studentProfiles), [startDate, endDate, studentProfiles]);
-  const tutorGrowth = useMemo(() => growthPoints(startDate, endDate, tutorProfiles), [startDate, endDate, tutorProfiles]);
+  const studentGrowth = useMemo(() => growthPoints(startDate, endDate, studentProfiles, lang), [startDate, endDate, studentProfiles, lang]);
+  const tutorGrowth = useMemo(() => growthPoints(startDate, endDate, tutorProfiles, lang), [startDate, endDate, tutorProfiles, lang]);
   const personClasses = selectedPerson
-    ? classes.filter((cls) =>
+    ? completedClasses.filter((cls) =>
         personType === "student"
           ? cls.student_uid === selectedPerson
           : cls.teacher_uid === selectedPerson
-      ).filter((cls) => inDateRange(parseDate(cls.lesson_date), personStart, personEnd))
+      ).filter((cls) => inDateRange(classStartsAt(cls), personStart, personEnd))
     : [];
   const personVolunteerMinutes = selectedPerson && personType === "tutor"
     ? volunteerRecords
@@ -420,7 +451,7 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
         supabase.from("profiles").select("uid, role, name, created_at"),
         supabase.from("student_profiles").select("uid"),
         supabase.from("tutor_profiles").select("uid"),
-        supabase.from("classes").select("lesson_id, student_uid, teacher_uid, lesson_date, start_time, end_time"),
+        supabase.from("classes").select("lesson_id, student_uid, teacher_uid, time, duration, status"),
         supabase.from("volunteer_records").select("tutor_uid, uploaded_at, minutes"),
       ]);
 
@@ -436,7 +467,7 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
       setProfiles((profilesResult.data ?? []) as ProfileRow[]);
       setStudentUids(((studentsResult.data ?? []) as Array<{ uid: string }>).map((row) => row.uid));
       setTutorUids(((tutorsResult.data ?? []) as Array<{ uid: string }>).map((row) => row.uid));
-      setClasses((classesResult.data ?? []) as ClassRow[]);
+      setClasses(((classesResult.data ?? []) as ClassRow[]).filter((cls) => cls.status !== "cancelled"));
       setVolunteerRecords((volunteerResult.data ?? []) as VolunteerRecordRow[]);
       setLoading(false);
     }
@@ -481,7 +512,7 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
           <div className="grid w-full gap-4 xl:max-w-sm">
             <h3 className="text-card-foreground">{t("admin.periodReport")}</h3>
             <CalendarInput label={t("common.startDate")} value={startDate} onChange={setStartDate} />
-            <CalendarInput label={t("common.endDate")} value={endDate} onChange={setEndDate} />
+            <CalendarInput label={t("common.endDate")} value={endDate} onChange={(value) => setEndDate(clampDateInput(value, maxDate))} max={maxDate} />
             <p className="text-xs text-muted-foreground">{t("admin.chartInterval", { interval })}</p>
           </div>
 
@@ -532,7 +563,7 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
         <h3 className="text-card-foreground">{t("admin.individualQuery")}</h3>
         <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1.2fr]">
           <CalendarInput label={t("common.startDate")} value={personStart} onChange={setPersonStart} />
-          <CalendarInput label={t("common.endDate")} value={personEnd} onChange={setPersonEnd} />
+          <CalendarInput label={t("common.endDate")} value={personEnd} onChange={(value) => setPersonEnd(clampDateInput(value, maxDate))} max={maxDate} />
           <div>
             <span className="text-sm text-card-foreground">{t("common.type")}</span>
             <div className="mt-2 flex h-11 rounded-xl bg-muted p-1">

@@ -28,8 +28,8 @@ type StoredUser = {
   uid: string;
 };
 
-function formatUploadedAt(date: Date) {
-  return date.toLocaleString("en-US", {
+function formatUploadedAt(date: Date, lang: string) {
+  return date.toLocaleString(lang === "zh" ? "zh-CN" : "en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -46,13 +46,13 @@ function formatDuration(totalMinutes: number, t: ReturnType<typeof useLanguage>[
   return t("common.hourMinuteShort", { hours, minutes });
 }
 
-function toVolunteerEntry(record: VolunteerRecordRow): VolunteerEntry {
+function toVolunteerEntry(record: VolunteerRecordRow, lang: string): VolunteerEntry {
   const uploadedAt = new Date(record.uploaded_at);
 
   return {
     id: record.record_id,
     taskName: record.task_name,
-    uploadedAt: formatUploadedAt(uploadedAt),
+    uploadedAt: formatUploadedAt(uploadedAt, lang),
     uploadedAtMs: uploadedAt.getTime(),
     totalMinutes: record.minutes,
   };
@@ -120,7 +120,7 @@ export function VolunteerRecordPage({ lang }: { lang: string }) {
         return;
       }
 
-      setEntries(((data ?? []) as VolunteerRecordRow[]).map(toVolunteerEntry));
+      setEntries(((data ?? []) as VolunteerRecordRow[]).map((record) => toVolunteerEntry(record, lang)));
       setLoading(false);
     }
 
@@ -129,7 +129,7 @@ export function VolunteerRecordPage({ lang }: { lang: string }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [lang, t]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -163,7 +163,7 @@ export function VolunteerRecordPage({ lang }: { lang: string }) {
       return;
     }
 
-    setEntries((current) => [toVolunteerEntry(data as VolunteerRecordRow), ...current]);
+    setEntries((current) => [toVolunteerEntry(data as VolunteerRecordRow, lang), ...current]);
     setTaskName("");
     setHours("");
     setMinutes("");

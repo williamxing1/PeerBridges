@@ -19,9 +19,10 @@ type ClassRow = {
   lesson_id: string;
   student_uid: string;
   teacher_uid: string;
-  lesson_date: string;
-  start_time: string;
-  end_time: string;
+  time: string;
+  duration: number;
+  student_wants_to_share?: string | null;
+  status?: string | null;
 };
 type StoredUser = {
   uid: string;
@@ -77,13 +78,6 @@ function formatDate(d: Date, lang: string = "en") {
   return d.toLocaleDateString(lang === "zh" ? "zh-CN" : "en-US", { weekday: "long", month: "long", day: "numeric" });
 }
 
-function formatDbDate(d: Date) {
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
 function parseSlotTime(time: string) {
   const [hourPart, minutePart, period] = time.match(/(\d+):(\d+) (AM|PM)/)?.slice(1) ?? [];
   let hours = Number(hourPart);
@@ -98,12 +92,6 @@ function beijingSlotInstant(date: Date, slotIdx: number, ends = false) {
   return new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate(), hours - 8, minutes, 0));
 }
 
-function dbInstant(date: string, time: string) {
-  const [year, month, day] = date.split("-").map(Number);
-  const [hours, minutes, seconds = 0] = time.split(":").map(Number);
-  return new Date(Date.UTC(year, month - 1, day, hours - 8, minutes, seconds));
-}
-
 function formatLocalTime(date: Date, lang: string) {
   return date.toLocaleTimeString(lang === "zh" ? "zh-CN" : "en-US", {
     hour: "numeric",
@@ -115,8 +103,9 @@ function formatLocalSlotRange(date: Date, slotIdx: number, lang: string) {
   return `${formatLocalTime(beijingSlotInstant(date, slotIdx), lang)} - ${formatLocalTime(beijingSlotInstant(date, slotIdx, true), lang)}`;
 }
 
-function formatLocalDbTimeRange(date: string, startTime: string, endTime: string, lang: string) {
-  return `${formatLocalTime(dbInstant(date, startTime), lang)} - ${formatLocalTime(dbInstant(date, endTime), lang)}`;
+function formatLocalInstantRange(start: Date, duration: number, lang: string) {
+  const end = new Date(start.getTime() + duration * 60000);
+  return `${formatLocalTime(start, lang)} - ${formatLocalTime(end, lang)}`;
 }
 
 function formatLocalSlotDate(date: Date, lang: string) {
@@ -176,10 +165,21 @@ function availabilityToUpdate(availability: Availability) {
   );
 }
 
-function timeToSlotIndex(time: string) {
-  const [hours, minutes] = time.split(":").map(Number);
-  const totalMinutes = hours * 60 + minutes;
-  return (totalMinutes - 7 * 60) / 30;
+function slotIndexForInstant(date: Date, instant: Date) {
+  return Math.round((instant.getTime() - beijingSlotInstant(date, 0).getTime()) / 1800000);
+}
+
+function weekendWindow(dates: { sat: Date; sun: Date }) {
+  return {
+    start: beijingSlotInstant(dates.sat, 0),
+    end: beijingSlotInstant(dates.sun, SLOT_TIMES.length - 1, true),
+  };
+}
+
+function classInWeekend(cls: ClassRow, dates: { sat: Date; sun: Date }) {
+  const startsAt = new Date(cls.time);
+  const { start, end } = weekendWindow(dates);
+  return startsAt >= start && startsAt < end;
 }
 
 function BookingPanel({
@@ -291,7 +291,7 @@ function CancelBookingDialog({
               <X size={15} />
             </button>
           </div>
-          <div className="mt-5 flex justify-end gap-2">
+          <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-end">
             <button
               onClick={onCancel}
               className="rounded-xl border border-border bg-card px-4 py-2 text-sm text-card-foreground hover:bg-accent transition-colors"
@@ -334,7 +334,7 @@ function SlotButton({
   let stateClass = "bg-muted/50 text-muted-foreground/40 border-transparent hover:bg-muted";
   let label = t("common.unavailable");
 
-  if (booking && available) {
+  if (booking) {
     stateClass = "bg-emerald-50 text-emerald-900 border-emerald-200 hover:border-emerald-300";
     label = booking.student;
   } else if (available) {
@@ -469,17 +469,18 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
       }
 
       const { availability: nextAvailability, unset } = profileToAvailability(profile as unknown as TutorProfileAvailability);
-      const nextWeekendDates = getWeekendDates(weekendDates.afterTutorCutoff && unset);
-
-      const satDate = formatDbDate(nextWeekendDates.sat);
-      const sunDate = formatDbDate(nextWeekendDates.sun);
+      const currentWeekendDates = getWeekendDates(false);
+      const followingWeekendDates = getWeekendDates(true);
+      const currentWindow = weekendWindow(currentWeekendDates);
+      const followingWindow = weekendWindow(followingWeekendDates);
       const { data: classRows, error: classesError } = await supabase
         .from("classes")
-        .select("lesson_id, student_uid, teacher_uid, lesson_date, start_time, end_time")
+        .select("lesson_id, student_uid, teacher_uid, time, duration, student_wants_to_share, status")
         .eq("teacher_uid", tutorUid)
-        .in("lesson_date", [satDate, sunDate])
-        .order("lesson_date", { ascending: true })
-        .order("start_time", { ascending: true });
+        .gte("time", currentWindow.start.toISOString())
+        .lt("time", (currentWeekendDates.afterTutorCutoff ? followingWindow.end : currentWindow.end).toISOString())
+        .or("status.is.null,status.neq.cancelled")
+        .order("time", { ascending: true });
 
       if (classesError) {
         if (!cancelled) {
@@ -489,7 +490,17 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
         return;
       }
 
-      const classes = (classRows ?? []) as ClassRow[];
+      const allClasses = (classRows ?? []) as ClassRow[];
+      const hasUpcomingFollowingWeekendBooking = allClasses.some((cls) => {
+        const startsAt = new Date(cls.time);
+        const endsAt = new Date(startsAt.getTime() + cls.duration * 60000);
+        return classInWeekend(cls, followingWeekendDates) && endsAt > new Date();
+      });
+      const nextWeekendDates =
+        currentWeekendDates.afterTutorCutoff && (unset || hasUpcomingFollowingWeekendBooking)
+          ? followingWeekendDates
+          : currentWeekendDates;
+      const classes = allClasses.filter((cls) => classInWeekend(cls, nextWeekendDates));
       const studentUids = Array.from(new Set(classes.map((cls) => cls.student_uid)));
       const studentNames = new Map<string, string>();
 
@@ -514,15 +525,19 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
 
       const nextBookings: Record<string, Booking> = {};
       classes.forEach((cls) => {
-        const day: Day = cls.lesson_date === satDate ? "sat" : "sun";
-        const startIdx = timeToSlotIndex(cls.start_time);
-        const endIdx = timeToSlotIndex(cls.end_time);
+        const startsAt = new Date(cls.time);
+        const satStart = beijingSlotInstant(nextWeekendDates.sat, 0);
+        const sunStart = beijingSlotInstant(nextWeekendDates.sun, 0);
+        const day: Day = startsAt < sunStart ? "sat" : "sun";
+        const dayDate = day === "sat" ? nextWeekendDates.sat : nextWeekendDates.sun;
+        const startIdx = slotIndexForInstant(dayDate, startsAt);
+        const endIdx = startIdx + cls.duration / 30;
         const student = studentNames.get(cls.student_uid) ?? cls.student_uid;
         const booking: Booking = {
           student,
-          note: "",
-          date: formatLocalSlotDate(day === "sat" ? nextWeekendDates.sat : nextWeekendDates.sun, lang),
-          time: formatLocalDbTimeRange(cls.lesson_date, cls.start_time, cls.end_time, lang),
+          note: cls.student_wants_to_share?.trim() || "",
+          date: formatLocalSlotDate(dayDate, lang),
+          time: formatLocalInstantRange(startsAt, cls.duration, lang),
         };
 
         for (let idx = startIdx; idx < endIdx; idx += 1) {
@@ -555,7 +570,7 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
     const booking = bookings[key];
     const available = availability[day].includes(slotIdx);
 
-    if (booking && available) {
+    if (booking) {
       setSelectedBookingKey(key);
       return;
     }

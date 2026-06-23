@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Edit3, Plus, Star, Trash2 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { ArrowLeft, Plus, Star, Trash2 } from "lucide-react";
 import { useLanguage } from "../i18n";
 import { supabase } from "../../lib/supabase/client";
 
@@ -20,9 +20,8 @@ type ClassRow = {
   lesson_id: string;
   student_uid: string;
   teacher_uid: string;
-  lesson_date: string;
-  start_time: string;
-  end_time: string;
+  time: string;
+  duration: number;
   evaluation_completed: boolean;
   description: string | null;
 };
@@ -79,42 +78,51 @@ function readStoredUser() {
   }
 }
 
-function getClassDateTime(date: string, time: string) {
-  const [year, month, day] = date.split("-").map(Number);
-  const [hours, minutes, seconds = 0] = time.split(":").map(Number);
-  return new Date(Date.UTC(year, month - 1, day, hours - 8, minutes, seconds));
+function localeForLang(lang: string) {
+  return lang === "zh" ? "zh-CN" : "en-US";
 }
 
-function formatClassDate(date: Date) {
-  return date.toLocaleDateString("en-US", {
+function formatClassDate(date: Date, lang: string) {
+  return date.toLocaleDateString(localeForLang(lang), {
     month: "short",
     day: "numeric",
     year: "numeric",
   });
 }
 
-function formatClassTime(date: Date) {
-  return date.toLocaleTimeString("en-US", {
+function formatClassTime(date: Date, lang: string) {
+  return date.toLocaleTimeString(localeForLang(lang), {
     hour: "numeric",
     minute: "2-digit",
   });
 }
 
 function getClassMinutes(cls: ClassRow) {
-  const startsAt = getClassDateTime(cls.lesson_date, cls.start_time);
-  const endsAt = getClassDateTime(cls.lesson_date, cls.end_time);
-  return Math.max(0, Math.round((endsAt.getTime() - startsAt.getTime()) / 60000));
+  return cls.duration;
+}
+
+function aoeDeadlineInstant(date: string) {
+  const [year, month, day] = date.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + 1, 11, 59, 59, 999));
+}
+
+function formatAoeDeadlineLocal(date: string, lang: string) {
+  return aoeDeadlineInstant(date).toLocaleString(localeForLang(lang), {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
 }
 
 export function EvaluationPage({ classId }: { classId: string }) {
-  const { t } = useLanguage();
+  const { t, lang } = useLanguage();
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const editMode = searchParams.get("edit") === "1";
   const [evaluationClass, setEvaluationClass] = useState<EvaluationClass | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
-  const [existingEvaluationId, setExistingEvaluationId] = useState("");
   const [rating, setRating] = useState(0);
   const [feedback, setFeedback] = useState("");
   const [classDescription, setClassDescription] = useState("");
@@ -161,7 +169,7 @@ export function EvaluationPage({ classId }: { classId: string }) {
 
       const { data: classRow, error: classError } = await supabase
         .from("classes")
-        .select("lesson_id, student_uid, teacher_uid, lesson_date, start_time, end_time, evaluation_completed, description")
+        .select("lesson_id, student_uid, teacher_uid, time, duration, evaluation_completed, description")
         .eq("lesson_id", classId)
         .eq("teacher_uid", tutorUid)
         .maybeSingle();
@@ -219,18 +227,19 @@ export function EvaluationPage({ classId }: { classId: string }) {
         const savedVolunteerRows = (volunteerResult.data ?? []) as VolunteerRecordRow[];
         const savedPrepMinutes = savedVolunteerRows.find((row) => isPreparationRecord(row.task_name))?.minutes;
         const savedEvaluationMinutes = savedVolunteerRows.find((row) => isEvaluationRecord(row.task_name))?.minutes;
+        const startsAt = new Date(cls.time);
+        const endsAt = new Date(startsAt.getTime() + cls.duration * 60000);
 
         setEvaluationClass({
           id: cls.lesson_id,
           student: studentName,
           studentUid: cls.student_uid,
           teacherUid: cls.teacher_uid,
-          date: formatClassDate(getClassDateTime(cls.lesson_date, cls.start_time)),
-          time: `${formatClassTime(getClassDateTime(cls.lesson_date, cls.start_time))} - ${formatClassTime(getClassDateTime(cls.lesson_date, cls.end_time))}`,
+          date: formatClassDate(startsAt, lang),
+          time: `${formatClassTime(startsAt, lang)} - ${formatClassTime(endsAt, lang)}`,
           minutes: getClassMinutes(cls),
           evaluationCompleted: cls.evaluation_completed,
         });
-        setExistingEvaluationId(latestEvaluation?.evaluation_id ?? "");
         setClassDescription(cls.description ?? "");
         setRating(latestEvaluation?.stars ?? 0);
         setFeedback(latestEvaluation?.feedback ?? "");
@@ -322,17 +331,13 @@ export function EvaluationPage({ classId }: { classId: string }) {
 
     const evaluationPayload = {
       lesson_id: evaluationClass.id,
+      teacher_uid: evaluationClass.teacherUid,
       feedback: feedbackValue,
       stars: rating,
       created_at: createdAt,
     };
 
-    const { error: evaluationError } = existingEvaluationId
-      ? await supabase
-          .from("evaluations")
-          .update(evaluationPayload)
-          .eq("evaluation_id", existingEvaluationId)
-      : await supabase.from("evaluations").insert(evaluationPayload);
+    const { error: evaluationError } = await supabase.from("evaluations").insert(evaluationPayload);
 
     if (evaluationError) {
       setSubmitError(evaluationError.message || t("dashboard.evaluationSubmitError"));
@@ -463,7 +468,7 @@ export function EvaluationPage({ classId }: { classId: string }) {
             {t("dashboard.backToDashboard")}
           </Link>
           <h2 className="text-foreground">
-            {evaluationClass.evaluationCompleted && !editMode ? t("dashboard.myEvaluation") : t("dashboard.completeEvaluation")}
+            {evaluationClass.evaluationCompleted ? t("dashboard.myEvaluation") : t("dashboard.completeEvaluation")}
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
             {evaluationClass.student} · {evaluationClass.date} · {evaluationClass.time}
@@ -471,13 +476,7 @@ export function EvaluationPage({ classId }: { classId: string }) {
         </div>
       </div>
 
-      {evaluationClass.evaluationCompleted && editMode && (
-        <div className="rounded-xl border border-primary/20 bg-primary/10 px-4 py-3 text-sm text-primary">
-          {t("dashboard.evaluationAlreadyCompleted")}
-        </div>
-      )}
-
-      {evaluationClass.evaluationCompleted && !editMode ? (
+      {evaluationClass.evaluationCompleted ? (
         <EvaluationSummary
           classDescription={classDescription}
           rating={rating}
@@ -486,7 +485,6 @@ export function EvaluationPage({ classId }: { classId: string }) {
           classMinutes={classMinutes}
           prepMinutes={prepMinutes}
           evaluationMinutes={evaluationMinutes}
-          classId={evaluationClass.id}
         />
       ) : (
       <form
@@ -602,6 +600,11 @@ export function EvaluationPage({ classId }: { classId: string }) {
                         onChange={(event) => updateAssignment(index, "dueDate", event.target.value)}
                         className="mt-1 h-11 w-full rounded-xl border border-border bg-card px-3 text-sm text-foreground outline-none transition focus:border-primary/40"
                       />
+                      <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+                        {assignment.dueDate
+                          ? t("dashboard.assignmentDueAoeHelp", { date: formatAoeDeadlineLocal(assignment.dueDate, lang) })
+                          : t("dashboard.assignmentDueAoeGeneralHelp")}
+                      </span>
                     </label>
                   </div>
                   <label className="mt-4 block">
@@ -693,7 +696,6 @@ function EvaluationSummary({
   classMinutes,
   prepMinutes,
   evaluationMinutes,
-  classId,
 }: {
   classDescription: string;
   rating: number;
@@ -702,7 +704,6 @@ function EvaluationSummary({
   classMinutes: number;
   prepMinutes: string;
   evaluationMinutes: string;
-  classId: string;
 }) {
   const { t } = useLanguage();
   const parsedPrepMinutes = Number(prepMinutes || 0);
@@ -710,7 +711,7 @@ function EvaluationSummary({
   const totalMinutes = classMinutes + parsedPrepMinutes + parsedEvaluationMinutes;
 
   return (
-    <div className="relative grid gap-5 pb-16">
+    <div className="grid gap-5">
       <section className="rounded-2xl border border-border bg-card p-5">
         <p className="text-sm text-muted-foreground">{t("dashboard.classDescription")}</p>
         <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-card-foreground">{classDescription || t("common.none")}</p>
@@ -773,14 +774,6 @@ function EvaluationSummary({
           ))}
         </div>
       </section>
-
-      <Link
-        href={`/evaluations/${classId}?edit=1`}
-        className="fixed bottom-5 right-5 inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-3 text-sm text-primary-foreground shadow-lg transition-colors hover:bg-primary/90"
-      >
-        <Edit3 size={15} />
-        {t("dashboard.editEvaluation")}
-      </Link>
     </div>
   );
 }

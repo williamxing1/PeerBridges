@@ -10,7 +10,9 @@ import { TutorSchedulePage } from "./components/TutorSchedulePage";
 import { VolunteerRecordPage } from "./components/VolunteerRecordPage";
 import { AdminDashboardPage } from "./components/AdminDashboardPage";
 import { ManageMediaPage, MediaListPage } from "./components/MediaPages";
+import { CommunicationsPage } from "./components/CommunicationsPage";
 import { LanguageProvider, LanguageSelect, optionLabel, useLanguage } from "./i18n";
+import { countryLabelForValue, countryOptionsForLang } from "./data/countries";
 import { supabase } from "../lib/supabase/client";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as Tabs from "@radix-ui/react-tabs";
@@ -144,8 +146,6 @@ const COMPLETED_CLASSES = [
 
 const storedUserKey = "tutorflow-user";
 const storedUserUpdatedEvent = "tutorflow-user-updated";
-const provinces = ["Ontario", "British Columbia", "Alberta", "Quebec", "California", "New York"];
-const cities = ["Toronto", "Vancouver", "Calgary", "Montreal", "Los Angeles", "New York City"];
 const gradeOptions = ["Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6", "Grade 7", "Grade 8", "Grade 9", "Grade 10", "Grade 11", "Grade 12"];
 const englishLevels = ["Beginner", "Intermediate", "Advanced"];
 const tutorStudentGrades = ["Elementary school", "Middle school", "High school"];
@@ -163,8 +163,7 @@ type SettingsProfile = {
   name: string;
   email: string;
   wechatId: string;
-  province: string;
-  city: string;
+  country: string;
   grade: string;
   englishLevel: string;
   school: string;
@@ -177,13 +176,14 @@ type ClassRow = {
   lesson_id: string;
   student_uid: string;
   teacher_uid: string;
-  lesson_date: string;
-  start_time: string;
-  end_time: string;
+  time: string;
+  duration: number;
   evaluation_completed: boolean;
   student_attended?: boolean;
   teacher_attended?: boolean;
   student_wants_to_share?: string | null;
+  recurring_lesson_id?: string | null;
+  status?: string | null;
 };
 type BasicProfile = {
   uid: string;
@@ -208,6 +208,7 @@ type AssignmentRow = {
   name: string;
   description: string;
   due_date: string;
+  complete: boolean;
 };
 type TutorDetailsRow = {
   uid: string;
@@ -219,7 +220,9 @@ type UIAssignment = {
   name: string;
   description: string;
   due: string;
+  status: "assigned" | "dueSoon" | "overdue";
   dueSoon: boolean;
+  overdue: boolean;
 };
 type StudentFeedback = {
   teacher: string;
@@ -256,6 +259,7 @@ type UIClass = {
   evaluationCompleted: boolean;
   studentAttended?: boolean;
   teacherAttended?: boolean;
+  recurringLessonId?: string | null;
   classLink?: string;
   meetingPassword?: string;
   feedback?: typeof LAST_FEEDBACK;
@@ -296,86 +300,77 @@ const emptyStudentDashboardData: StudentDashboardData = {
   completedClasses: [],
 };
 
-function getClassDateTime(date: string, time: string) {
+function localeForLang(lang: string) {
+  return lang === "zh" ? "zh-CN" : "en-US";
+}
+
+function formatClassDateFromInstant(date: Date, lang: string) {
+  return date.toLocaleDateString(localeForLang(lang), {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function aoeDeadlineInstant(date: string) {
   const [year, month, day] = date.split("-").map(Number);
-  const [hours, minutes, seconds = 0] = time.split(":").map(Number);
-  return new Date(Date.UTC(year, month - 1, day, hours - 8, minutes, seconds));
+  return new Date(Date.UTC(year, month - 1, day + 1, 11, 59, 59, 999));
 }
 
-function formatDateForQuery(date: Date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function formatTimeForQuery(date: Date) {
-  const hours = String(date.getHours()).padStart(2, "0");
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-  const seconds = String(date.getSeconds()).padStart(2, "0");
-  return `${hours}:${minutes}:${seconds}`;
-}
-
-function formatClassDate(date: string) {
-  return new Date(`${date}T00:00:00`).toLocaleDateString("en-US", {
+function formatAoeDeadlineLocal(date: string, lang: string) {
+  return aoeDeadlineInstant(date).toLocaleString(localeForLang(lang), {
     month: "short",
     day: "numeric",
     year: "numeric",
-  });
-}
-
-function formatClassDateFromInstant(date: Date) {
-  return date.toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-}
-
-function formatDueDate(date: string) {
-  return new Date(`${date}T00:00:00`).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-}
-
-function formatClassTime(time: string) {
-  return new Date(`1970-01-01T${time}`).toLocaleTimeString("en-US", {
     hour: "numeric",
     minute: "2-digit",
+    timeZoneName: "short",
   });
 }
 
-function formatClassTimeFromInstant(date: Date) {
-  return date.toLocaleTimeString("en-US", {
+function formatClassTimeFromInstant(date: Date, lang: string) {
+  return date.toLocaleTimeString(localeForLang(lang), {
     hour: "numeric",
     minute: "2-digit",
   });
 }
 
 function getClassMinutes(cls: ClassRow) {
-  const startsAt = getClassDateTime(cls.lesson_date, cls.start_time);
-  const endsAt = getClassDateTime(cls.lesson_date, cls.end_time);
-  return Math.max(0, Math.round((endsAt.getTime() - startsAt.getTime()) / 60000));
+  return cls.duration;
+}
+
+function getClassStart(cls: ClassRow) {
+  return new Date(cls.time);
+}
+
+function getClassEnd(cls: ClassRow) {
+  return new Date(getClassStart(cls).getTime() + cls.duration * 60000);
 }
 
 function toUIClass(
   cls: ClassRow,
   studentProfiles: Map<string, BasicProfile>,
   teacherName: string,
-  meetingDetails?: { classLink: string; meetingPassword: string }
+  meetingDetails: { classLink: string; meetingPassword: string } | undefined,
+  lang: string,
+  labels: {
+    unknownStudent: (uid: string) => string;
+    classWith: (name: string) => string;
+    studentNotes: (value: string) => string;
+    studentWechatId: (value: string) => string;
+    none: string;
+  }
 ): UIClass {
-  const startsAt = getClassDateTime(cls.lesson_date, cls.start_time);
-  const endsAt = getClassDateTime(cls.lesson_date, cls.end_time);
+  const startsAt = getClassStart(cls);
+  const endsAt = getClassEnd(cls);
   const studentProfile = studentProfiles.get(cls.student_uid);
-  const student = studentProfile?.name ?? `Unknown student (${cls.student_uid.slice(0, 8)})`;
-  const studentNote = cls.student_wants_to_share?.trim() || "None";
-  const studentWechat = studentProfile?.wechat_id?.trim() || "None";
+  const student = studentProfile?.name ?? labels.unknownStudent(cls.student_uid.slice(0, 8));
+  const studentNote = cls.student_wants_to_share?.trim() || labels.none;
+  const studentWechat = studentProfile?.wechat_id?.trim() || labels.none;
 
   return {
     id: cls.lesson_id,
-    name: `Class with ${student}`,
+    name: labels.classWith(student),
     student,
     studentUid: cls.student_uid,
     teacher: teacherName,
@@ -385,20 +380,21 @@ function toUIClass(
     displayPersonRole: "student",
     displayPersonName: student,
     descriptionLines: [
-      `Student Notes: ${studentNote}`,
-      `Student WeChat ID: ${studentWechat}`,
+      labels.studentNotes(studentNote),
+      labels.studentWechatId(studentWechat),
     ],
-    date: formatClassDateFromInstant(startsAt),
-    time: `${formatClassTimeFromInstant(startsAt)} - ${formatClassTimeFromInstant(endsAt)}`,
+    date: formatClassDateFromInstant(startsAt, lang),
+    time: `${formatClassTimeFromInstant(startsAt, lang)} - ${formatClassTimeFromInstant(endsAt, lang)}`,
     startsAt,
     endsAt,
     minutes: getClassMinutes(cls),
     evaluationCompleted: cls.evaluation_completed,
     studentAttended: cls.student_attended,
     teacherAttended: cls.teacher_attended,
+    recurringLessonId: cls.recurring_lesson_id,
     classLink: meetingDetails?.classLink,
     meetingPassword: meetingDetails?.meetingPassword,
-    feedback: cls.evaluation_completed ? LAST_FEEDBACK : undefined,
+    feedback: cls.evaluation_completed ? { ...LAST_FEEDBACK, date: formatClassDateFromInstant(startsAt, lang) } : undefined,
   };
 }
 
@@ -406,19 +402,27 @@ function toStudentUIClass(
   cls: ClassRow,
   teacherNames: Map<string, string>,
   tutorDetails: Map<string, { classLink: string; meetingPassword: string }>,
-  evaluations: Map<string, EvaluationRow>
+  evaluations: Map<string, EvaluationRow>,
+  lang: string,
+  labels: {
+    tutor: string;
+    chineseClass: string;
+    myNote: (value: string) => string;
+    meetingPassword: (value: string) => string;
+    none: string;
+  }
 ): UIClass {
-  const startsAt = getClassDateTime(cls.lesson_date, cls.start_time);
-  const endsAt = getClassDateTime(cls.lesson_date, cls.end_time);
-  const teacher = teacherNames.get(cls.teacher_uid)?.trim() || "Tutor";
+  const startsAt = getClassStart(cls);
+  const endsAt = getClassEnd(cls);
+  const teacher = teacherNames.get(cls.teacher_uid)?.trim() || labels.tutor;
   const details = tutorDetails.get(cls.teacher_uid);
   const evaluation = evaluations.get(cls.lesson_id);
-  const studentNote = cls.student_wants_to_share?.trim() || "None";
-  const meetingPassword = details?.meetingPassword?.trim() || "None";
+  const studentNote = cls.student_wants_to_share?.trim() || labels.none;
+  const meetingPassword = details?.meetingPassword?.trim() || labels.none;
 
   return {
     id: cls.lesson_id,
-    name: "Chinese Class",
+    name: labels.chineseClass,
     student: "",
     studentUid: cls.student_uid,
     teacher,
@@ -428,17 +432,18 @@ function toStudentUIClass(
     displayPersonRole: "tutor",
     displayPersonName: teacher,
     descriptionLines: [
-      `My note: ${studentNote}`,
-      `Meeting password: ${meetingPassword}`,
+      labels.myNote(studentNote),
+      labels.meetingPassword(meetingPassword),
     ],
-    date: formatClassDateFromInstant(startsAt),
-    time: `${formatClassTimeFromInstant(startsAt)} - ${formatClassTimeFromInstant(endsAt)}`,
+    date: formatClassDateFromInstant(startsAt, lang),
+    time: `${formatClassTimeFromInstant(startsAt, lang)} - ${formatClassTimeFromInstant(endsAt, lang)}`,
     startsAt,
     endsAt,
     minutes: getClassMinutes(cls),
     evaluationCompleted: cls.evaluation_completed,
     studentAttended: cls.student_attended,
     teacherAttended: cls.teacher_attended,
+    recurringLessonId: cls.recurring_lesson_id,
     classLink: details?.classLink,
     meetingPassword: details?.meetingPassword,
     feedback: evaluation
@@ -447,7 +452,7 @@ function toStudentUIClass(
           stars: evaluation.stars,
           subject: "",
           text: evaluation.feedback,
-          date: formatClassDate(evaluation.created_at.slice(0, 10)),
+          date: formatClassDateFromInstant(startsAt, lang),
         }
       : undefined,
   };
@@ -549,6 +554,48 @@ function SettingsSelect({
   );
 }
 
+function SettingsCountrySelect({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const { lang, t } = useLanguage();
+  const options = countryOptionsForLang(lang);
+
+  return (
+    <label className="block">
+      <span className="text-sm text-card-foreground">{label}</span>
+      <Select.Root value={value} onValueChange={onChange}>
+        <Select.Trigger className="mt-2 flex h-11 w-full items-center justify-between rounded-xl border border-border bg-background px-3.5 text-sm text-foreground outline-none transition data-[placeholder]:text-muted-foreground focus:border-primary/40 focus:bg-card">
+          <Select.Value placeholder={t("common.selectLabel", { label: label.toLowerCase() })} />
+          <Select.Icon>
+            <ChevronDown size={16} className="text-muted-foreground" />
+          </Select.Icon>
+        </Select.Trigger>
+        <Select.Portal>
+          <Select.Content className="z-[70] max-h-72 overflow-hidden rounded-xl border border-border bg-popover p-1 shadow-xl">
+            <Select.Viewport>
+              {options.map((option) => (
+                <Select.Item
+                  key={option.value}
+                  value={option.value}
+                  className="flex cursor-pointer items-center rounded-lg px-3 py-2 text-sm text-popover-foreground outline-none data-[highlighted]:bg-accent"
+                >
+                  <Select.ItemText>{option.label}</Select.ItemText>
+                </Select.Item>
+              ))}
+            </Select.Viewport>
+          </Select.Content>
+        </Select.Portal>
+      </Select.Root>
+    </label>
+  );
+}
+
 function AccountSettingsDialog({
   open,
   onOpenChange,
@@ -569,8 +616,7 @@ function AccountSettingsDialog({
     name: fallbackUser.name,
     email: fallbackUser.email,
     wechatId: "",
-    province: "",
-    city: "",
+    country: "",
     grade: "",
     englishLevel: "",
     school: "",
@@ -629,8 +675,7 @@ function AccountSettingsDialog({
         name: baseProfile.name,
         email: baseProfile.email,
         wechatId: baseProfile.wechat_id,
-        province: "",
-        city: "",
+        country: "",
         grade: "",
         englishLevel: "",
         school: "",
@@ -642,15 +687,14 @@ function AccountSettingsDialog({
       if (baseProfile.role === "student") {
         const { data, error: studentError } = await supabase
           .from("student_profiles")
-          .select("province, city, grade, english_level")
+          .select("country, grade, english_level")
           .eq("uid", uid)
           .single();
 
         if (studentError) {
           if (!cancelled) setError(studentError.message);
         } else {
-          nextProfile.province = data.province;
-          nextProfile.city = data.city;
+          nextProfile.country = data.country;
           nextProfile.grade = data.grade;
           nextProfile.englishLevel = data.english_level;
         }
@@ -718,8 +762,7 @@ function AccountSettingsDialog({
       const { error: studentError } = await supabase
         .from("student_profiles")
         .update({
-          province: profile.province,
-          city: profile.city,
+          country: profile.country,
           grade: profile.grade,
           english_level: profile.englishLevel,
         })
@@ -781,7 +824,7 @@ function AccountSettingsDialog({
   async function handleDeleteAccount() {
     setMessage("");
     setError("");
-    const confirmed = window.confirm("Delete this account? This cannot be undone.");
+    const confirmed = window.confirm(t("settings.deleteConfirm"));
     if (!confirmed) return;
 
     const { error: rpcError } = await supabase.rpc("delete_current_user");
@@ -805,11 +848,11 @@ function AccountSettingsDialog({
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/45 backdrop-blur-sm" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 flex h-[min(42rem,calc(100vh-2rem))] w-[min(64rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-border bg-card shadow-2xl">
-          <aside className="flex w-64 shrink-0 flex-col gap-2 border-r border-border bg-sidebar p-4">
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 flex h-[min(42rem,calc(100vh-2rem))] w-[min(64rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl md:flex-row">
+          <aside className="flex w-full shrink-0 items-center gap-2 overflow-x-auto border-b border-border bg-sidebar p-3 md:w-56 md:flex-col md:items-stretch md:border-b-0 md:border-r md:p-4">
             <Dialog.Close asChild>
-              <button className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-card-foreground">
-                <X size={22} />
+              <button className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-card-foreground md:mb-4 md:h-12 md:w-12">
+                <X size={20} />
               </button>
             </Dialog.Close>
             {sidebarItems.map(({ id, label, icon: Icon }) => (
@@ -817,7 +860,7 @@ function AccountSettingsDialog({
                 key={id}
                 type="button"
                 onClick={() => setTab(id)}
-                className={`flex items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition-colors ${
+                className={`flex shrink-0 items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition-colors md:w-full ${
                   tab === id ? "bg-accent text-card-foreground" : "text-muted-foreground hover:bg-accent/70 hover:text-card-foreground"
                 }`}
               >
@@ -828,13 +871,13 @@ function AccountSettingsDialog({
           </aside>
 
           <section className="flex min-w-0 flex-1 flex-col overflow-hidden">
-            <div className="border-b border-border px-8 py-6">
-              <Dialog.Title className="text-3xl text-card-foreground">
+            <div className="border-b border-border px-4 py-4 sm:px-6 md:px-8 md:py-6">
+              <Dialog.Title className="text-2xl text-card-foreground md:text-3xl">
                 {tab === "general" ? t("settings.general") : t("settings.account")}
               </Dialog.Title>
             </div>
 
-            <div className="flex-1 overflow-y-auto px-8 py-6">
+            <div className="flex-1 overflow-y-auto px-4 py-5 sm:px-6 md:px-8 md:py-6">
               {loading ? (
                 <p className="text-sm text-muted-foreground">{t("settings.loading")}</p>
               ) : tab === "general" ? (
@@ -845,8 +888,7 @@ function AccountSettingsDialog({
 
                   {profile.role === "student" && (
                     <>
-                      <SettingsSelect label={t("auth.province")} value={profile.province} onChange={(value) => updateProfile("province", value)} options={provinces} />
-                      <SettingsSelect label={t("auth.city")} value={profile.city} onChange={(value) => updateProfile("city", value)} options={cities} />
+                      <SettingsCountrySelect label={t("auth.country")} value={profile.country} onChange={(value) => updateProfile("country", value)} />
                       <SettingsSelect label={t("auth.grade")} value={profile.grade} onChange={(value) => updateProfile("grade", value)} options={gradeOptions} />
                       <SettingsSelect label={t("auth.englishLevel")} value={profile.englishLevel} onChange={(value) => updateProfile("englishLevel", value)} options={englishLevels} />
                     </>
@@ -864,7 +906,7 @@ function AccountSettingsDialog({
                 </div>
               ) : (
                 <div className="divide-y divide-border border-y border-border">
-                  <div className="flex items-center justify-between gap-4 py-7">
+                  <div className="flex flex-col items-start justify-between gap-4 py-7 sm:flex-row sm:items-center">
                     <div>
                       <p className="text-lg text-card-foreground">{t("settings.resetPassword")}</p>
                       <p className="mt-1 text-sm text-muted-foreground">{t("settings.resetPasswordHelp", { email: profile.email })}</p>
@@ -877,7 +919,7 @@ function AccountSettingsDialog({
                       {t("settings.reset")}
                     </button>
                   </div>
-                  <div className="flex items-center justify-between gap-4 py-7">
+                  <div className="flex flex-col items-start justify-between gap-4 py-7 sm:flex-row sm:items-center">
                     <p className="text-lg text-card-foreground">{t("settings.deleteAccount")}</p>
                     <button
                       type="button"
@@ -891,13 +933,13 @@ function AccountSettingsDialog({
               )}
             </div>
 
-            <div className="flex items-center gap-4 border-t border-border px-8 py-5">
+            <div className="flex flex-col items-stretch gap-3 border-t border-border px-4 py-4 sm:flex-row sm:items-center sm:px-6 md:px-8 md:py-5">
               {tab === "general" && (
                 <button
                   type="button"
                   onClick={handleSave}
                   disabled={saving || loading}
-                  className="rounded-xl bg-primary px-5 py-2.5 text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="rounded-xl bg-primary px-5 py-2.5 text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50 sm:w-fit"
                 >
                   {saving ? t("common.saving") : t("settings.save")}
                 </button>
@@ -942,6 +984,12 @@ function BlankAvatar({ size = 40 }: { size?: number }) {
   );
 }
 
+function normalizeExternalUrl(url: string) {
+  const trimmed = url.trim();
+  if (/^[a-z][a-z\d+\-.]*:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
+
 async function handleJoinClass(cls: {
   id: string | number;
   startsAt?: Date;
@@ -961,7 +1009,7 @@ async function handleJoinClass(cls: {
   }
 
   if (cls.classLink) {
-    window.open(cls.classLink, "_blank", "noopener,noreferrer");
+    window.open(normalizeExternalUrl(cls.classLink), "_blank", "noopener,noreferrer");
   }
 }
 
@@ -974,6 +1022,7 @@ function FeedbackDialog({
   onClose: () => void;
   feedback: (typeof COMPLETED_CLASSES)[0]["feedback"] | null;
 }) {
+  const { t, lang } = useLanguage();
   if (!feedback) return null;
   return (
     <Dialog.Root open={open} onOpenChange={(v) => !v && onClose()}>
@@ -981,7 +1030,7 @@ function FeedbackDialog({
         <Dialog.Overlay className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50" />
         <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-card p-5 shadow-2xl sm:p-6">
           <div className="flex items-center justify-between mb-5">
-            <Dialog.Title className="text-card-foreground">Teacher Feedback</Dialog.Title>
+            <Dialog.Title className="text-card-foreground">{t("feedback.teacherTitle")}</Dialog.Title>
             <button
               onClick={onClose}
               className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground transition-colors cursor-pointer"
@@ -1026,7 +1075,7 @@ function PersonProfileDialog({
   person: { uid: string; role: "student" | "tutor"; name: string } | null;
   onClose: () => void;
 }) {
-  const { t } = useLanguage();
+  const { t, lang } = useLanguage();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [details, setDetails] = useState<ProfileDetail[]>([]);
@@ -1102,7 +1151,7 @@ function PersonProfileDialog({
         .filter(([key, value]) => !hiddenFields.has(key) && value !== null && value !== "")
         .map(([key, value]) => ({
           label: labelFromColumn(key),
-          value: String(value),
+          value: key === "country" ? countryLabelForValue(String(value), lang) : String(value),
         }));
 
       if (!cancelled) {
@@ -1121,7 +1170,7 @@ function PersonProfileDialog({
     return () => {
       cancelled = true;
     };
-  }, [person, t]);
+  }, [person, t, lang]);
 
   return (
     <Dialog.Root open={person !== null} onOpenChange={(open) => !open && onClose()}>
@@ -1167,10 +1216,11 @@ function PersonProfileDialog({
 function ClassCard({
   cls,
   completed,
-  feedbackLabel = "View Teacher Feedback",
-  feedbackPendingLabel = "Teacher feedback pending",
+  feedbackLabel,
+  feedbackPendingLabel,
   useEvaluationPage = false,
   attendee = "student",
+  onCancelClass,
 }: {
   cls: {
     id: string | number;
@@ -1184,6 +1234,7 @@ function ClassCard({
     date: string;
     time: string;
     startsAt?: Date;
+    recurringLessonId?: string | null;
     evaluationCompleted?: boolean;
     classLink?: string;
     meetingPassword?: string;
@@ -1194,6 +1245,7 @@ function ClassCard({
   feedbackPendingLabel?: string;
   useEvaluationPage?: boolean;
   attendee?: "student" | "teacher";
+  onCancelClass?: (cls: { id: string | number; recurringLessonId?: string | null }) => void;
 }) {
   const { t } = useLanguage();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -1210,7 +1262,16 @@ function ClassCard({
     <>
       <div className="bg-card border border-border rounded-xl p-4 flex flex-col gap-3 hover:shadow-md transition-shadow">
         <div className="flex items-start justify-between gap-3">
-          <p className="text-card-foreground text-sm leading-snug">{cls.name}</p>
+          <div className="min-w-0">
+            <p className="flex flex-wrap items-center gap-2 text-card-foreground text-sm leading-snug">
+              <span>{cls.name}</span>
+              {cls.recurringLessonId && (
+                <span className="inline-flex w-fit rounded-full bg-blue-50 px-2 py-0.5 text-[11px] text-blue-700">
+                  {t("dashboard.recurring")}
+                </span>
+              )}
+            </p>
+          </div>
           {completed && (
             <CheckCircle2 size={16} className="text-emerald-500 shrink-0 mt-0.5" />
           )}
@@ -1281,14 +1342,25 @@ function ClassCard({
           <p className="mt-1 text-xs text-muted-foreground">{actionLabel}</p>
         )}
         {!completed && (
-          <button
-            type="button"
-            onClick={() => void handleJoinClass(cls, attendee)}
-            disabled={!cls.classLink}
-            className="mt-1 w-full text-center text-xs text-primary border border-primary/30 rounded-lg py-1.5 hover:bg-accent transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {t("dashboard.joinSession")}
-          </button>
+          <div className="mt-1 grid gap-2">
+            <button
+              type="button"
+              onClick={() => void handleJoinClass(cls, attendee)}
+              disabled={!cls.classLink}
+              className="w-full text-center text-xs text-primary border border-primary/30 rounded-lg py-1.5 hover:bg-accent transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {t("dashboard.joinSession")}
+            </button>
+            {attendee === "student" && onCancelClass && (
+              <button
+                type="button"
+                onClick={() => onCancelClass(cls)}
+                className="w-full text-center text-xs text-destructive border border-destructive/30 rounded-lg py-1.5 hover:bg-destructive/10 transition-colors cursor-pointer"
+              >
+                {t("dashboard.cancelClass")}
+              </button>
+            )}
+          </div>
         )}
       </div>
       {completed && cls.feedback && (
@@ -1366,13 +1438,6 @@ function TopNav({
             sideOffset={8}
             className="bg-popover border border-border rounded-xl shadow-xl z-50 w-52 p-1.5 overflow-hidden"
           >
-            <div className="mb-1 flex items-center gap-3 border-b border-border px-3 py-2">
-              <BlankAvatar size={34} />
-              <div className="min-w-0">
-                <p className="text-sm text-popover-foreground">{user.name}</p>
-                <p className="text-xs text-muted-foreground">{user.email}</p>
-              </div>
-            </div>
             <DropdownMenu.Item
               onSelect={() => setSettingsOpen(true)}
               className="flex items-center gap-2.5 px-3 py-2 text-sm text-popover-foreground rounded-lg hover:bg-accent cursor-pointer outline-none"
@@ -1413,6 +1478,7 @@ function Sidebar({
   volunteerAwardHref,
   studentMaterialsHref,
   manageMediaHref,
+  communicationsHref,
   open,
   onClose,
 }: {
@@ -1424,6 +1490,7 @@ function Sidebar({
   volunteerAwardHref?: string;
   studentMaterialsHref?: string;
   manageMediaHref?: string;
+  communicationsHref?: string;
   open: boolean;
   onClose: () => void;
 }) {
@@ -1448,6 +1515,9 @@ function Sidebar({
       : []),
     ...(manageMediaHref
       ? [{ id: "manageMedia", href: manageMediaHref, icon: GraduationCap, label: t("common.manageMedia") }]
+      : []),
+    ...(communicationsHref
+      ? [{ id: "communications", href: communicationsHref, icon: MessageSquare, label: t("common.communications") }]
       : []),
   ];
   return (
@@ -1565,12 +1635,51 @@ function AssignmentsCard({
   lang,
   assignments,
   loading,
+  onCompleteAssignment,
 }: {
   lang: string;
   assignments: UIAssignment[];
   loading: boolean;
+  onCompleteAssignment: (assignmentId: string) => void;
 }) {
   const { t } = useLanguage();
+  const [completingId, setCompletingId] = useState("");
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  async function handleComplete(assignmentId: string) {
+    setCompletingId(assignmentId);
+    setError("");
+    setMessage("");
+    const storedUser = readStoredUser();
+    const { data: authData } = await supabase.auth.getUser();
+    const studentUid = authData.user?.id || storedUser?.uid || "";
+
+    if (!studentUid) {
+      setError(t("auth.authUserError"));
+      setCompletingId("");
+      return;
+    }
+
+    const { data: completedAssignment, error: completeError } = await supabase
+      .from("assignments")
+      .update({ complete: true })
+      .eq("assignment_id", assignmentId)
+      .eq("student_uid", studentUid)
+      .select("assignment_id")
+      .maybeSingle();
+
+    if (completeError || !completedAssignment) {
+      setError(completeError?.message || t("dashboard.assignmentCompleteError"));
+      setCompletingId("");
+      return;
+    }
+
+    onCompleteAssignment(assignmentId);
+    setMessage(t("dashboard.assignmentCompleted"));
+    setCompletingId("");
+  }
+
   return (
     <div className="bg-card border border-border rounded-2xl p-5 flex flex-col gap-4 h-full">
       <div className="flex items-center justify-between">
@@ -1580,6 +1689,16 @@ function AssignmentsCard({
         </span>
       </div>
       <div className="flex flex-col gap-3 flex-1">
+        {error && (
+          <div className="rounded-xl border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        )}
+        {message && (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+            {message}
+          </div>
+        )}
         {loading ? (
           <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-border bg-background px-4 py-10 text-sm text-muted-foreground">
             {t("dashboard.loadingAssignments")}
@@ -1592,21 +1711,37 @@ function AssignmentsCard({
           <div
             key={a.id}
             className={`flex flex-col gap-2.5 px-4 py-3.5 rounded-xl border ${
-              a.dueSoon ? "border-amber-200 bg-amber-50" : "border-border bg-background"
+              a.overdue ? "border-destructive/30 bg-destructive/10" : a.dueSoon ? "border-amber-200 bg-amber-50" : "border-border bg-background"
             }`}
           >
             <div className="flex items-start justify-between gap-3">
               <p className="text-sm text-card-foreground">{a.name}</p>
-              {a.dueSoon && (
-                <span className="text-xs text-amber-600 bg-amber-100 px-2 py-0.5 rounded-full shrink-0">
-                  {t("dashboard.dueSoon")}
-                </span>
-              )}
+              <span
+                className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${
+                  a.overdue
+                    ? "bg-destructive/10 text-destructive"
+                    : a.dueSoon
+                      ? "bg-amber-100 text-amber-700"
+                      : "bg-muted text-muted-foreground"
+                }`}
+              >
+                {a.status === "overdue" ? t("dashboard.overdue") : a.status === "dueSoon" ? t("dashboard.dueSoon") : t("dashboard.assigned")}
+              </span>
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">{a.description}</p>
-            <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
-              <CalendarDays size={11} />
-              {a.due}
+            <div className="mt-1 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                <CalendarDays size={11} />
+                {t("dashboard.dueAt", { date: a.due })}
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleComplete(a.id)}
+                disabled={completingId === a.id}
+                className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {completingId === a.id ? t("common.saving") : t("dashboard.markAssignmentComplete")}
+              </button>
             </div>
           </div>
         ))}
@@ -1753,6 +1888,7 @@ function UpcomingClassHero({
   cls,
   lang,
   attendee,
+  onCancelClass,
 }: {
   cls: {
     id: string | number;
@@ -1765,11 +1901,13 @@ function UpcomingClassHero({
     date: string;
     time: string;
     startsAt?: Date;
+    recurringLessonId?: string | null;
     classLink?: string;
     meetingPassword?: string;
   };
   lang: string;
   attendee: "student" | "teacher";
+  onCancelClass?: (cls: { id: string | number; recurringLessonId?: string | null }) => void;
 }) {
   const { t } = useLanguage();
   const [profilePerson, setProfilePerson] = useState<{ uid: string; role: "student" | "tutor"; name: string } | null>(null);
@@ -1784,7 +1922,14 @@ function UpcomingClassHero({
           </span>
         </div>
         <div>
-          <p className="text-card-foreground mb-1">{cls.name}</p>
+          <p className="mb-1 flex flex-wrap items-center gap-2 text-card-foreground">
+            <span>{cls.name}</span>
+            {cls.recurringLessonId && (
+              <span className="inline-flex rounded-full bg-blue-50 px-2 py-0.5 text-[11px] text-blue-700">
+                {t("dashboard.recurring")}
+              </span>
+            )}
+          </p>
           <div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
             <span className="flex items-center gap-1.5"><CalendarDays size={14} />{cls.date}</span>
             <span className="flex items-center gap-1.5"><Clock size={14} />{cls.time}</span>
@@ -1821,14 +1966,25 @@ function UpcomingClassHero({
           </div>
         </button>
       </div>
-      <button
-        type="button"
-        onClick={() => void handleJoinClass(cls, attendee)}
-        disabled={!cls.classLink}
-        className="w-full shrink-0 bg-primary text-primary-foreground px-6 py-3 rounded-xl text-sm hover:bg-primary/90 transition-colors cursor-pointer shadow-sm disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
-      >
-        {t("dashboard.joinSession")}
-      </button>
+      <div className="grid w-full shrink-0 gap-2 sm:w-auto">
+        <button
+          type="button"
+          onClick={() => void handleJoinClass(cls, attendee)}
+          disabled={!cls.classLink}
+          className="w-full bg-primary text-primary-foreground px-6 py-3 rounded-xl text-sm hover:bg-primary/90 transition-colors cursor-pointer shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {t("dashboard.joinSession")}
+        </button>
+        {attendee === "student" && onCancelClass && (
+          <button
+            type="button"
+            onClick={() => onCancelClass(cls)}
+            className="w-full rounded-xl border border-destructive/30 px-6 py-2.5 text-sm text-destructive transition-colors hover:bg-destructive/10"
+          >
+            {t("dashboard.cancelClass")}
+          </button>
+        )}
+      </div>
     </div>
     <PersonProfileDialog person={profilePerson} onClose={() => setProfilePerson(null)} />
     </>
@@ -1837,15 +1993,56 @@ function UpcomingClassHero({
 
 // ─── CLASSES CARD ────────────────────────────────────────────────────────────
 
+const upcomingClassesPerPage = 3;
+const completedClassesPerPage = 9;
+
+function PaginationControls({
+  page,
+  totalPages,
+  onPageChange,
+}: {
+  page: number;
+  totalPages: number;
+  onPageChange: (page: number) => void;
+}) {
+  const { t } = useLanguage();
+  if (totalPages <= 1) return null;
+
+  return (
+    <div className="mt-4 flex items-center justify-center gap-2 border-t border-border pt-3">
+      <button
+        type="button"
+        onClick={() => onPageChange(Math.max(1, page - 1))}
+        disabled={page <= 1}
+        className="rounded-lg border border-border px-3 py-1.5 text-xs text-card-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {t("common.prev")}
+      </button>
+      <span className="min-w-10 text-center text-xs text-muted-foreground">
+        {page} / {totalPages}
+      </span>
+      <button
+        type="button"
+        onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+        disabled={page >= totalPages}
+        className="rounded-lg border border-border px-3 py-1.5 text-xs text-card-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {t("common.next")}
+      </button>
+    </div>
+  );
+}
+
 function ClassesCard({
   lang,
   feedbackLabel,
   feedbackPendingLabel,
-  upcomingClasses = SCHEDULED_CLASSES,
-  completedClasses = COMPLETED_CLASSES,
+  upcomingClasses = [],
+  completedClasses = [],
   loading = false,
   useEvaluationPage = false,
   attendee = "student",
+  onCancelClass,
 }: {
   lang: string;
   feedbackLabel?: string;
@@ -1856,6 +2053,7 @@ function ClassesCard({
     teacher: string;
     date: string;
     time: string;
+    recurringLessonId?: string | null;
     evaluationCompleted?: boolean;
     feedback?: typeof LAST_FEEDBACK;
   }>;
@@ -1871,15 +2069,33 @@ function ClassesCard({
   loading?: boolean;
   useEvaluationPage?: boolean;
   attendee?: "student" | "teacher";
+  onCancelClass?: (cls: { id: string | number; recurringLessonId?: string | null }) => void;
 }) {
   const { t } = useLanguage();
+  const [upcomingPage, setUpcomingPage] = useState(1);
+  const [completedPage, setCompletedPage] = useState(1);
   const resolvedFeedbackLabel = feedbackLabel ?? t("dashboard.viewTeacherFeedback");
   const resolvedFeedbackPendingLabel = feedbackPendingLabel ?? t("dashboard.teacherFeedbackPending");
+  const upcomingTotalPages = Math.max(1, Math.ceil(upcomingClasses.length / upcomingClassesPerPage));
+  const completedTotalPages = Math.max(1, Math.ceil(completedClasses.length / completedClassesPerPage));
+  const safeUpcomingPage = Math.min(upcomingPage, upcomingTotalPages);
+  const safeCompletedPage = Math.min(completedPage, completedTotalPages);
+  const pagedUpcomingClasses = upcomingClasses.slice((safeUpcomingPage - 1) * upcomingClassesPerPage, safeUpcomingPage * upcomingClassesPerPage);
+  const pagedCompletedClasses = completedClasses.slice((safeCompletedPage - 1) * completedClassesPerPage, safeCompletedPage * completedClassesPerPage);
+
+  useEffect(() => {
+    setUpcomingPage(1);
+  }, [upcomingClasses.length]);
+
+  useEffect(() => {
+    setCompletedPage(1);
+  }, [completedClasses.length]);
+
   return (
     <div className="bg-card border border-border rounded-2xl p-5 flex flex-col gap-4">
       <h3 className="text-card-foreground">{t("dashboard.classes")}</h3>
       <Tabs.Root defaultValue="scheduled">
-        <Tabs.List className="flex gap-1 bg-muted p-1 rounded-xl w-fit mb-4">
+        <Tabs.List className="mb-4 flex w-full gap-1 rounded-xl bg-muted p-1 sm:w-fit">
           {[
             { value: "scheduled", label: t("dashboard.upcoming") },
             { value: "completed", label: t("dashboard.completed") },
@@ -1887,7 +2103,7 @@ function ClassesCard({
             <Tabs.Trigger
               key={value}
               value={value}
-              className="px-4 py-1.5 text-sm rounded-lg transition-all cursor-pointer text-muted-foreground data-[state=active]:bg-card data-[state=active]:text-card-foreground data-[state=active]:shadow-sm"
+              className="flex-1 rounded-lg px-4 py-1.5 text-sm text-muted-foreground transition-all cursor-pointer data-[state=active]:bg-card data-[state=active]:text-card-foreground data-[state=active]:shadow-sm sm:flex-none"
             >
               {label}
             </Tabs.Trigger>
@@ -1905,15 +2121,18 @@ function ClassesCard({
               <p className="text-sm">{t("dashboard.noUpcomingClasses")}</p>
             </div>
           ) : (
-            <div className="flex flex-col gap-3">
-              {upcomingClasses.map((cls, index) =>
-                index === 0 ? (
-                  <UpcomingClassHero key={cls.id} cls={cls} lang={lang} attendee={attendee} />
-                ) : (
-                  <ClassCard key={cls.id} cls={cls} completed={false} attendee={attendee} />
-                )
-              )}
-            </div>
+            <>
+              <div className="flex flex-col gap-3">
+                {pagedUpcomingClasses.map((cls, index) =>
+                  (safeUpcomingPage - 1) * upcomingClassesPerPage + index === 0 ? (
+                    <UpcomingClassHero key={cls.id} cls={cls} lang={lang} attendee={attendee} onCancelClass={onCancelClass} />
+                  ) : (
+                    <ClassCard key={cls.id} cls={cls} completed={false} attendee={attendee} onCancelClass={onCancelClass} />
+                  )
+                )}
+              </div>
+              <PaginationControls page={safeUpcomingPage} totalPages={upcomingTotalPages} onPageChange={setUpcomingPage} />
+            </>
           )}
         </Tabs.Content>
         <Tabs.Content value="completed">
@@ -1928,11 +2147,14 @@ function ClassesCard({
               <p className="text-sm">{t("dashboard.noCompletedClasses")}</p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {completedClasses.map((cls) => (
-                <ClassCard key={cls.id} cls={cls} completed={true} feedbackLabel={resolvedFeedbackLabel} feedbackPendingLabel={resolvedFeedbackPendingLabel} useEvaluationPage={useEvaluationPage} attendee={attendee} />
-              ))}
-            </div>
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {pagedCompletedClasses.map((cls) => (
+                  <ClassCard key={cls.id} cls={cls} completed={true} feedbackLabel={resolvedFeedbackLabel} feedbackPendingLabel={resolvedFeedbackPendingLabel} useEvaluationPage={useEvaluationPage} attendee={attendee} />
+                ))}
+              </div>
+              <PaginationControls page={safeCompletedPage} totalPages={completedTotalPages} onPageChange={setCompletedPage} />
+            </>
           )}
         </Tabs.Content>
       </Tabs.Root>
@@ -1946,7 +2168,74 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
   const { t } = useLanguage();
   const [studentData, setStudentData] = useState<StudentDashboardData>(emptyStudentDashboardData);
   const [storedUser, setStoredUser] = useState<StoredUser | null>(null);
-  const studentName = storedUser?.name || STUDENT.name;
+  const [cancelTarget, setCancelTarget] = useState<{ id: string | number; recurringLessonId?: string | null } | null>(null);
+  const [cancelError, setCancelError] = useState("");
+  const [cancelMessage, setCancelMessage] = useState("");
+  const [cancelling, setCancelling] = useState(false);
+  const studentName = storedUser?.name || t("common.student");
+
+  async function cancelOneClass(target: { id: string | number }) {
+    const { error } = await supabase
+      .from("classes")
+      .update({ status: "cancelled" })
+      .eq("lesson_id", target.id);
+
+    if (error) throw error;
+
+    setStudentData((current) => ({
+      ...current,
+      upcomingClasses: current.upcomingClasses.filter((cls) => cls.id !== target.id),
+    }));
+  }
+
+  async function handleCancelThisClass() {
+    if (!cancelTarget) return;
+    setCancelling(true);
+    setCancelError("");
+
+    try {
+      await cancelOneClass(cancelTarget);
+      setCancelMessage(t("dashboard.classCancelled"));
+      setCancelTarget(null);
+    } catch (error) {
+      setCancelError(error instanceof Error ? error.message : t("dashboard.cancelClassError"));
+    } finally {
+      setCancelling(false);
+    }
+  }
+
+  async function handleCancelRecurringSeries() {
+    if (!cancelTarget?.recurringLessonId) return;
+    setCancelling(true);
+    setCancelError("");
+
+    try {
+      const { error: deleteClassesError } = await supabase
+        .from("classes")
+        .delete()
+        .eq("recurring_lesson_id", cancelTarget.recurringLessonId);
+
+      if (deleteClassesError) throw deleteClassesError;
+
+      const { error: deleteRecurringError } = await supabase
+        .from("recurring_classes")
+        .delete()
+        .eq("lesson_id", cancelTarget.recurringLessonId);
+
+      if (deleteRecurringError) throw deleteRecurringError;
+
+      setStudentData((current) => ({
+        ...current,
+        upcomingClasses: current.upcomingClasses.filter((cls) => cls.recurringLessonId !== cancelTarget.recurringLessonId),
+      }));
+      setCancelMessage(t("dashboard.classCancelled"));
+      setCancelTarget(null);
+    } catch (error) {
+      setCancelError(error instanceof Error ? error.message : t("dashboard.cancelClassError"));
+    } finally {
+      setCancelling(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -1979,10 +2268,10 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
 
       const { data: classRows, error: classesError } = await supabase
         .from("classes")
-        .select("lesson_id, student_uid, teacher_uid, lesson_date, start_time, end_time, evaluation_completed, student_attended, teacher_attended, student_wants_to_share")
+        .select("lesson_id, student_uid, teacher_uid, time, duration, evaluation_completed, student_attended, teacher_attended, student_wants_to_share, recurring_lesson_id, status")
         .eq("student_uid", studentUid)
-        .order("lesson_date", { ascending: true })
-        .order("start_time", { ascending: true });
+        .or("status.is.null,status.neq.cancelled")
+        .order("time", { ascending: true });
 
       if (classesError) {
         if (!cancelled) {
@@ -2057,12 +2346,11 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
       }
 
       const today = new Date();
-      const todayDate = today.toISOString().slice(0, 10);
       const { data: assignmentRows, error: assignmentsError } = await supabase
         .from("assignments")
-        .select("assignment_id, student_uid, teacher_uid, name, description, due_date")
+        .select("assignment_id, student_uid, teacher_uid, name, description, due_date, complete")
         .eq("student_uid", studentUid)
-        .gt("due_date", todayDate)
+        .eq("complete", false)
         .order("due_date", { ascending: true });
 
       if (assignmentsError) {
@@ -2072,32 +2360,43 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
         return;
       }
 
-      const uiClasses = classes.map((cls) => toStudentUIClass(cls, teacherNames, tutorDetails, evaluations));
+      const studentClassLabels = {
+        tutor: t("common.tutor"),
+        chineseClass: t("dashboard.chineseClass"),
+        myNote: (value: string) => t("dashboard.myNote", { value }),
+        meetingPassword: (value: string) => t("dashboard.meetingPassword", { password: value }),
+        none: t("common.none"),
+      };
+      const uiClasses = classes.map((cls) => toStudentUIClass(cls, teacherNames, tutorDetails, evaluations, lang, studentClassLabels));
       const byStartTime = (a: UIClass, b: UIClass) => a.startsAt.getTime() - b.startsAt.getTime();
-      const latestEvaluation = Array.from(evaluations.values()).sort(
-        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      )[0];
-      const latestClass = latestEvaluation
-        ? classes.find((cls) => cls.lesson_id === latestEvaluation.lesson_id)
-        : undefined;
+      const byEndTimeNearestCompleted = (a: UIClass, b: UIClass) => b.endsAt.getTime() - a.endsAt.getTime();
+      const latestClass = classes
+        .filter((cls) => evaluations.has(cls.lesson_id))
+        .sort((a, b) => getClassStart(b).getTime() - getClassStart(a).getTime())[0];
+      const latestEvaluation = latestClass ? evaluations.get(latestClass.lesson_id) : undefined;
       const feedback = latestEvaluation && latestClass
         ? {
-            teacher: teacherNames.get(latestClass.teacher_uid)?.trim() || "Tutor",
+            teacher: teacherNames.get(latestClass.teacher_uid)?.trim() || t("common.tutor"),
             text: latestEvaluation.feedback,
             stars: latestEvaluation.stars,
-            date: formatClassDate(latestEvaluation.created_at.slice(0, 10)),
+            date: formatClassDateFromInstant(getClassStart(latestClass), lang),
           }
         : null;
       const assignments = ((assignmentRows ?? []) as AssignmentRow[]).map((assignment) => {
-        const dueDate = new Date(`${assignment.due_date}T00:00:00`);
-        const daysUntilDue = Math.ceil((dueDate.getTime() - new Date(todayDate).getTime()) / 86400000);
+        const deadline = aoeDeadlineInstant(assignment.due_date);
+        const msUntilDue = deadline.getTime() - today.getTime();
+        const overdue = msUntilDue < 0;
+        const dueSoon = !overdue && msUntilDue <= 48 * 60 * 60 * 1000;
+        const status: UIAssignment["status"] = overdue ? "overdue" : dueSoon ? "dueSoon" : "assigned";
 
         return {
           id: assignment.assignment_id,
           name: assignment.name,
           description: assignment.description,
-          due: formatDueDate(assignment.due_date),
-          dueSoon: daysUntilDue <= 2,
+          due: formatAoeDeadlineLocal(assignment.due_date, lang),
+          status,
+          dueSoon,
+          overdue,
         };
       });
 
@@ -2108,7 +2407,7 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
           feedback,
           assignments,
           upcomingClasses: uiClasses.filter((cls) => cls.startsAt > today).sort(byStartTime),
-          completedClasses: uiClasses.filter((cls) => cls.endsAt < today).sort(byStartTime),
+          completedClasses: uiClasses.filter((cls) => cls.endsAt < today).sort(byEndTimeNearestCompleted),
         });
       }
     }
@@ -2139,11 +2438,26 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
           {studentData.error}
         </div>
       )}
+      {cancelMessage && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+          {cancelMessage}
+        </div>
+      )}
 
       {/* Top row: Feedback + Assignments side by side */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 md:[min-height:300px]">
         <FeedbackCard lang={lang} feedback={studentData.feedback} loading={studentData.loading} />
-        <AssignmentsCard lang={lang} assignments={studentData.assignments} loading={studentData.loading} />
+        <AssignmentsCard
+          lang={lang}
+          assignments={studentData.assignments}
+          loading={studentData.loading}
+          onCompleteAssignment={(assignmentId) => {
+            setStudentData((current) => ({
+              ...current,
+              assignments: current.assignments.filter((assignment) => assignment.id !== assignmentId),
+            }));
+          }}
+        />
       </div>
 
       {/* Bottom: Classes (full width, larger) */}
@@ -2152,7 +2466,56 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
         upcomingClasses={studentData.upcomingClasses}
         completedClasses={studentData.completedClasses}
         loading={studentData.loading}
+        onCancelClass={(cls) => {
+          setCancelMessage("");
+          setCancelError("");
+          setCancelTarget(cls);
+        }}
       />
+      <Dialog.Root open={cancelTarget !== null} onOpenChange={(open) => !open && setCancelTarget(null)}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-card p-5 shadow-xl">
+            <Dialog.Close
+              className="absolute right-4 top-4 inline-flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-card-foreground"
+              aria-label={t("common.close")}
+            >
+              <X className="h-4 w-4" />
+            </Dialog.Close>
+            <Dialog.Title className="pr-10 text-card-foreground">
+              {cancelTarget?.recurringLessonId ? t("dashboard.cancelRecurringTitle") : t("dashboard.cancelClassTitle")}
+            </Dialog.Title>
+            <Dialog.Description className="mt-2 text-sm leading-relaxed text-muted-foreground">
+              {cancelTarget?.recurringLessonId ? t("dashboard.cancelRecurringHelp") : t("dashboard.cancelClassHelp")}
+            </Dialog.Description>
+            {cancelError && (
+              <p className="mt-4 rounded-xl border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {cancelError}
+              </p>
+            )}
+            <div className={`mt-5 grid w-full gap-2 ${cancelTarget?.recurringLessonId ? "sm:grid-cols-2" : ""}`}>
+              {cancelTarget?.recurringLessonId && (
+                <button
+                  type="button"
+                  onClick={() => void handleCancelRecurringSeries()}
+                  disabled={cancelling}
+                  className="w-full rounded-xl border border-destructive/30 px-4 py-2 text-sm text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
+                >
+                  {t("dashboard.cancelRecurringSeries")}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => void handleCancelThisClass()}
+                disabled={cancelling}
+                className="w-full rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+              >
+                {cancelTarget?.recurringLessonId ? t("dashboard.cancelThisClass") : t("common.confirm")}
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
   );
 }
@@ -2162,7 +2525,7 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
   const [dashboardData, setDashboardData] = useState<TutorDashboardData>(emptyTutorDashboardData);
   const [storedUser, setStoredUser] = useState<StoredUser | null>(null);
   const [currentTutorUid, setCurrentTutorUid] = useState("");
-  const tutorName = storedUser?.name || TUTOR.name;
+  const tutorName = storedUser?.name || t("common.tutor");
 
   useEffect(() => {
     let cancelled = false;
@@ -2226,9 +2589,7 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
       }
 
       const now = new Date();
-      const todayDate = formatDateForQuery(now);
-      const currentTime = formatTimeForQuery(now);
-      const classColumns = "lesson_id, student_uid, teacher_uid, lesson_date, start_time, end_time, evaluation_completed, student_attended, teacher_attended, student_wants_to_share";
+      const classColumns = "lesson_id, student_uid, teacher_uid, time, duration, evaluation_completed, student_attended, teacher_attended, student_wants_to_share, recurring_lesson_id, status";
 
       const { data: allClassRowsData, error: allClassRowsError } = await supabase
         .from("classes")
@@ -2238,68 +2599,32 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
         rows: allClassRowsData ?? [],
       });
 
-      const [pastCompletedResult, todayCompletedResult] = await Promise.all([
-        supabase
-          .from("classes")
-          .select(classColumns)
-          .eq("teacher_uid", tutorUid)
-          .lt("lesson_date", todayDate)
-          .order("lesson_date", { ascending: true })
-          .order("start_time", { ascending: true }),
-        supabase
-          .from("classes")
-          .select(classColumns)
-          .eq("teacher_uid", tutorUid)
-          .eq("lesson_date", todayDate)
-          .lt("end_time", currentTime)
-          .order("lesson_date", { ascending: true })
-          .order("start_time", { ascending: true }),
-      ]);
-
-      const completedClassesError = pastCompletedResult.error ?? todayCompletedResult.error;
-      if (completedClassesError) {
-        if (!cancelled) {
-          setDashboardData({
-            ...emptyTutorDashboardData,
-            loading: false,
-            error: completedClassesError.message,
-          });
-        }
-        return;
-      }
-
-      const { data: upcomingClassRowsData, error: upcomingClassesError } = await supabase
+      const { data: tutorClassRowsData, error: tutorClassesError } = await supabase
         .from("classes")
         .select(classColumns)
         .eq("teacher_uid", tutorUid)
-        .or(`lesson_date.gt.${todayDate},and(lesson_date.eq.${todayDate},start_time.gt.${currentTime})`)
-        .order("lesson_date", { ascending: true })
-        .order("start_time", { ascending: true });
+        .or("status.is.null,status.neq.cancelled")
+        .order("time", { ascending: true });
 
-      if (upcomingClassesError) {
+      if (tutorClassesError) {
         if (!cancelled) {
           setDashboardData({
             ...emptyTutorDashboardData,
             loading: false,
-            error: upcomingClassesError.message,
+            error: tutorClassesError.message,
           });
         }
         return;
       }
 
-      const completedClassRows = [
-        ...((pastCompletedResult.data ?? []) as ClassRow[]),
-        ...((todayCompletedResult.data ?? []) as ClassRow[]),
-      ];
+      const tutorClassRows = (tutorClassRowsData ?? []) as ClassRow[];
+      const completedClassRows = tutorClassRows.filter((cls) => getClassEnd(cls) < now);
       console.log("Tutor completed classes query result", {
         tutorUid,
-        todayDate,
-        currentTime,
-        pastCompletedRows: pastCompletedResult.data ?? [],
-        todayCompletedRows: todayCompletedResult.data ?? [],
+        now: now.toISOString(),
         completedClassRows,
       });
-      const upcomingClassRows = (upcomingClassRowsData ?? []) as ClassRow[];
+      const upcomingClassRows = tutorClassRows.filter((cls) => getClassEnd(cls) >= now);
       const classes = [...completedClassRows, ...upcomingClassRows];
       const studentUids = Array.from(new Set(classes.map((cls) => cls.student_uid)));
       const completedStudentUids = Array.from(new Set(completedClassRows.map((cls) => cls.student_uid)));
@@ -2355,9 +2680,17 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
           }
         : undefined;
 
-      const completedUiClasses = completedClassRows.map((cls) => toUIClass(cls, studentProfiles, currentTutorName, meetingDetails));
-      const upcomingUiClasses = upcomingClassRows.map((cls) => toUIClass(cls, studentProfiles, currentTutorName, meetingDetails));
+      const tutorClassLabels = {
+        unknownStudent: (uid: string) => t("dashboard.unknownStudent", { uid }),
+        classWith: (name: string) => t("dashboard.classWith", { name }),
+        studentNotes: (value: string) => t("dashboard.studentNotes", { value }),
+        studentWechatId: (value: string) => t("dashboard.studentWechatId", { value }),
+        none: t("common.none"),
+      };
+      const completedUiClasses = completedClassRows.map((cls) => toUIClass(cls, studentProfiles, currentTutorName, meetingDetails, lang, tutorClassLabels));
+      const upcomingUiClasses = upcomingClassRows.map((cls) => toUIClass(cls, studentProfiles, currentTutorName, meetingDetails, lang, tutorClassLabels));
       const byStartTime = (a: UIClass, b: UIClass) => a.startsAt.getTime() - b.startsAt.getTime();
+      const byEndTimeNearestCompleted = (a: UIClass, b: UIClass) => b.endsAt.getTime() - a.endsAt.getTime();
       const totalVolunteerMinutes = ((volunteerRecords ?? []) as VolunteerRecordRow[]).reduce(
         (total, record) => total + record.minutes,
         0
@@ -2374,9 +2707,9 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
           },
           pendingEvaluations: completedUiClasses
             .filter((cls) => !cls.evaluationCompleted)
-            .sort(byStartTime),
+            .sort(byEndTimeNearestCompleted),
           upcomingClasses: upcomingUiClasses.sort(byStartTime),
-          completedClasses: completedUiClasses.sort(byStartTime),
+          completedClasses: completedUiClasses.sort(byEndTimeNearestCompleted),
         });
       }
     }
@@ -2438,6 +2771,11 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
 
 // ─── ROOT SHELL ──────────────────────────────────────────────────────────────
 
+function LoadingFallback() {
+  const { t } = useLanguage();
+  return <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">{t("common.loading")}</div>;
+}
+
 export function AppShell({
   activePage,
   children,
@@ -2449,9 +2787,10 @@ export function AppShell({
   volunteerAwardHref,
   studentMaterialsHref,
   manageMediaHref,
+  communicationsHref,
   requiredRole,
 }: {
-  activePage: "dashboard" | "schedule" | "record" | "training" | "awards" | "studentMaterials" | "manageMedia";
+  activePage: "dashboard" | "schedule" | "record" | "training" | "awards" | "studentMaterials" | "manageMedia" | "communications";
   children: (lang: string) => ReactNode;
   user?: typeof STUDENT;
   dashboardHref?: string;
@@ -2461,11 +2800,12 @@ export function AppShell({
   volunteerAwardHref?: string;
   studentMaterialsHref?: string;
   manageMediaHref?: string;
+  communicationsHref?: string;
   requiredRole?: AccountRole;
 }) {
   return (
     <LanguageProvider>
-      <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">Loading...</div>}>
+      <Suspense fallback={<LoadingFallback />}>
         <AppShellContent
           activePage={activePage}
           user={user}
@@ -2476,6 +2816,7 @@ export function AppShell({
           volunteerAwardHref={volunteerAwardHref}
           studentMaterialsHref={studentMaterialsHref}
           manageMediaHref={manageMediaHref}
+          communicationsHref={communicationsHref}
           requiredRole={requiredRole}
         >
           {children}
@@ -2496,9 +2837,10 @@ function AppShellContent({
   volunteerAwardHref,
   studentMaterialsHref,
   manageMediaHref,
+  communicationsHref,
   requiredRole,
 }: {
-  activePage: "dashboard" | "schedule" | "record" | "training" | "awards" | "studentMaterials" | "manageMedia";
+  activePage: "dashboard" | "schedule" | "record" | "training" | "awards" | "studentMaterials" | "manageMedia" | "communications";
   children: (lang: string) => ReactNode;
   user: typeof STUDENT;
   dashboardHref: string;
@@ -2508,9 +2850,10 @@ function AppShellContent({
   volunteerAwardHref?: string;
   studentMaterialsHref?: string;
   manageMediaHref?: string;
+  communicationsHref?: string;
   requiredRole?: AccountRole;
 }) {
-  const { lang } = useLanguage();
+  const { lang, t } = useLanguage();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -2518,9 +2861,15 @@ function AppShellContent({
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [storedUser, setStoredUser] = useState<StoredUser | null>(null);
   const [authChecked, setAuthChecked] = useState(!requiredRole);
+  const fallbackName =
+    requiredRole === "tutor"
+      ? t("common.tutor")
+      : requiredRole === "admin"
+        ? t("role.administrator")
+        : t("common.student");
   const navUser = {
     ...user,
-    name: storedUser?.name || user.name,
+    name: storedUser?.name || fallbackName,
     email: storedUser?.email || user.email,
   };
 
@@ -2599,7 +2948,7 @@ function AppShellContent({
   if (!authChecked) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">
-        Loading...
+        {t("common.loading")}
       </div>
     );
   }
@@ -2621,6 +2970,7 @@ function AppShellContent({
           volunteerAwardHref={volunteerAwardHref}
           studentMaterialsHref={studentMaterialsHref}
           manageMediaHref={manageMediaHref}
+          communicationsHref={communicationsHref}
           open={sidebarOpen}
           onClose={() => setSidebarOpen(false)}
         />
@@ -2634,7 +2984,7 @@ function AppShellContent({
 
 export function StudentScheduleApp() {
   return (
-    <AppShell activePage="schedule" studentMaterialsHref="/student-materials" requiredRole="student">
+    <AppShell activePage="schedule" studentMaterialsHref="/student-materials" communicationsHref="/student-communications" requiredRole="student">
       {(lang) => <StudentSchedulePage lang={lang} />}
     </AppShell>
   );
@@ -2642,7 +2992,7 @@ export function StudentScheduleApp() {
 
 export function TutorApp() {
   return (
-    <AppShell activePage="dashboard" user={TUTOR} dashboardHref="/tutor-dashboard" scheduleHref="/tutor-schedule" recordHref="/volunteer-record" trainingHref="/training-materials" volunteerAwardHref="/volunteer-awards" requiredRole="tutor">
+    <AppShell activePage="dashboard" user={TUTOR} dashboardHref="/tutor-dashboard" scheduleHref="/tutor-schedule" recordHref="/volunteer-record" trainingHref="/training-materials" volunteerAwardHref="/volunteer-awards" communicationsHref="/tutor-communications" requiredRole="tutor">
       {(lang) => <TutorDashboardPage lang={lang} />}
     </AppShell>
   );
@@ -2650,7 +3000,7 @@ export function TutorApp() {
 
 export function TutorScheduleApp() {
   return (
-    <AppShell activePage="schedule" user={TUTOR} dashboardHref="/tutor-dashboard" scheduleHref="/tutor-schedule" recordHref="/volunteer-record" trainingHref="/training-materials" volunteerAwardHref="/volunteer-awards" requiredRole="tutor">
+    <AppShell activePage="schedule" user={TUTOR} dashboardHref="/tutor-dashboard" scheduleHref="/tutor-schedule" recordHref="/volunteer-record" trainingHref="/training-materials" volunteerAwardHref="/volunteer-awards" communicationsHref="/tutor-communications" requiredRole="tutor">
       {(lang) => <TutorSchedulePage lang={lang} />}
     </AppShell>
   );
@@ -2658,7 +3008,7 @@ export function TutorScheduleApp() {
 
 export function VolunteerRecordApp() {
   return (
-    <AppShell activePage="record" user={TUTOR} dashboardHref="/tutor-dashboard" scheduleHref="/tutor-schedule" recordHref="/volunteer-record" trainingHref="/training-materials" volunteerAwardHref="/volunteer-awards" requiredRole="tutor">
+    <AppShell activePage="record" user={TUTOR} dashboardHref="/tutor-dashboard" scheduleHref="/tutor-schedule" recordHref="/volunteer-record" trainingHref="/training-materials" volunteerAwardHref="/volunteer-awards" communicationsHref="/tutor-communications" requiredRole="tutor">
       {(lang) => <VolunteerRecordPage lang={lang} />}
     </AppShell>
   );
@@ -2666,7 +3016,7 @@ export function VolunteerRecordApp() {
 
 export function TrainingMaterialsApp() {
   return (
-    <AppShell activePage="training" user={TUTOR} dashboardHref="/tutor-dashboard" scheduleHref="/tutor-schedule" recordHref="/volunteer-record" trainingHref="/training-materials" volunteerAwardHref="/volunteer-awards" requiredRole="tutor">
+    <AppShell activePage="training" user={TUTOR} dashboardHref="/tutor-dashboard" scheduleHref="/tutor-schedule" recordHref="/volunteer-record" trainingHref="/training-materials" volunteerAwardHref="/volunteer-awards" communicationsHref="/tutor-communications" requiredRole="tutor">
       {() => <MediaListPage category="tutor_training" titleKey="media.tutorTrainingTitle" helpKey="media.tutorTrainingHelp" />}
     </AppShell>
   );
@@ -2674,7 +3024,7 @@ export function TrainingMaterialsApp() {
 
 export function VolunteerAwardsApp() {
   return (
-    <AppShell activePage="awards" user={TUTOR} dashboardHref="/tutor-dashboard" scheduleHref="/tutor-schedule" recordHref="/volunteer-record" trainingHref="/training-materials" volunteerAwardHref="/volunteer-awards" requiredRole="tutor">
+    <AppShell activePage="awards" user={TUTOR} dashboardHref="/tutor-dashboard" scheduleHref="/tutor-schedule" recordHref="/volunteer-record" trainingHref="/training-materials" volunteerAwardHref="/volunteer-awards" communicationsHref="/tutor-communications" requiredRole="tutor">
       {() => <MediaListPage category="volunteer_award" titleKey="media.volunteerAwardTitle" helpKey="media.volunteerAwardHelp" />}
     </AppShell>
   );
@@ -2682,15 +3032,31 @@ export function VolunteerAwardsApp() {
 
 export function StudentMaterialsApp() {
   return (
-    <AppShell activePage="studentMaterials" studentMaterialsHref="/student-materials" requiredRole="student">
+    <AppShell activePage="studentMaterials" studentMaterialsHref="/student-materials" communicationsHref="/student-communications" requiredRole="student">
       {() => <MediaListPage category="student_material" titleKey="media.studentMaterialTitle" helpKey="media.studentMaterialHelp" />}
+    </AppShell>
+  );
+}
+
+export function StudentCommunicationsApp() {
+  return (
+    <AppShell activePage="communications" studentMaterialsHref="/student-materials" communicationsHref="/student-communications" requiredRole="student">
+      {() => <CommunicationsPage viewerRole="student" />}
+    </AppShell>
+  );
+}
+
+export function TutorCommunicationsApp() {
+  return (
+    <AppShell activePage="communications" user={TUTOR} dashboardHref="/tutor-dashboard" scheduleHref="/tutor-schedule" recordHref="/volunteer-record" trainingHref="/training-materials" volunteerAwardHref="/volunteer-awards" communicationsHref="/tutor-communications" requiredRole="tutor">
+      {() => <CommunicationsPage viewerRole="tutor" />}
     </AppShell>
   );
 }
 
 export function AdminApp() {
   return (
-    <AppShell activePage="dashboard" user={ADMIN} dashboardHref="/admin-dashboard" scheduleHref={null} manageMediaHref="/admin-media" requiredRole="admin">
+    <AppShell activePage="dashboard" user={ADMIN} dashboardHref="/admin-dashboard" scheduleHref={null} manageMediaHref="/admin-media" communicationsHref="/admin-communications" requiredRole="admin">
       {(lang) => <AdminDashboardPage lang={lang} />}
     </AppShell>
   );
@@ -2698,15 +3064,23 @@ export function AdminApp() {
 
 export function ManageMediaApp() {
   return (
-    <AppShell activePage="manageMedia" user={ADMIN} dashboardHref="/admin-dashboard" scheduleHref={null} manageMediaHref="/admin-media" requiredRole="admin">
+    <AppShell activePage="manageMedia" user={ADMIN} dashboardHref="/admin-dashboard" scheduleHref={null} manageMediaHref="/admin-media" communicationsHref="/admin-communications" requiredRole="admin">
       {() => <ManageMediaPage />}
+    </AppShell>
+  );
+}
+
+export function AdminCommunicationsApp() {
+  return (
+    <AppShell activePage="communications" user={ADMIN} dashboardHref="/admin-dashboard" scheduleHref={null} manageMediaHref="/admin-media" communicationsHref="/admin-communications" requiredRole="admin">
+      {() => <CommunicationsPage viewerRole="admin" />}
     </AppShell>
   );
 }
 
 export default function App() {
   return (
-    <AppShell activePage="dashboard" studentMaterialsHref="/student-materials" requiredRole="student">
+    <AppShell activePage="dashboard" studentMaterialsHref="/student-materials" communicationsHref="/student-communications" requiredRole="student">
       {(lang) => <StudentDashboardPage lang={lang} />}
     </AppShell>
   );
