@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { StudentSchedulePage } from "./components/StudentSchedulePage";
+import { GradesToTutorMultiSelect } from "./components/GradesToTutorMultiSelect";
 import { TutorSchedulePage } from "./components/TutorSchedulePage";
 import { VolunteerRecordPage } from "./components/VolunteerRecordPage";
 import { AdminDashboardPage } from "./components/AdminDashboardPage";
@@ -13,6 +14,7 @@ import { ManageMediaPage, MediaListPage } from "./components/MediaPages";
 import { CommunicationsPage } from "./components/CommunicationsPage";
 import { LanguageProvider, LanguageSelect, optionLabel, useLanguage } from "./i18n";
 import { countryLabelForValue, countryOptionsForLang } from "./data/countries";
+import { parseGradesToTutor, serializeGradesToTutor } from "./lib/gradesToTutor";
 import { supabase } from "../lib/supabase/client";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as Tabs from "@radix-ui/react-tabs";
@@ -148,7 +150,6 @@ const storedUserKey = "tutorflow-user";
 const storedUserUpdatedEvent = "tutorflow-user-updated";
 const gradeOptions = ["Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6", "Grade 7", "Grade 8", "Grade 9", "Grade 10", "Grade 11", "Grade 12"];
 const englishLevels = ["Beginner", "Intermediate", "Advanced"];
-const tutorStudentGrades = ["Elementary school", "Middle school", "High school"];
 
 type StoredUser = {
   uid: string;
@@ -712,7 +713,7 @@ function AccountSettingsDialog({
         } else {
           nextProfile.school = data.school;
           nextProfile.grade = data.grade;
-          nextProfile.gradesToTutor = data.grades_to_tutor;
+          nextProfile.gradesToTutor = serializeGradesToTutor(parseGradesToTutor(data.grades_to_tutor));
           nextProfile.classLink = data.class_link;
           nextProfile.meetingPassword = data.meeting_password;
         }
@@ -898,7 +899,12 @@ function AccountSettingsDialog({
                     <>
                       <SettingsField label={t("auth.school")} value={profile.school} onChange={(value) => updateProfile("school", value)} />
                       <SettingsSelect label={t("auth.grade")} value={profile.grade} onChange={(value) => updateProfile("grade", value)} options={gradeOptions} />
-                      <SettingsSelect label={t("auth.studentGradeToTutor")} value={profile.gradesToTutor} onChange={(value) => updateProfile("gradesToTutor", value)} options={tutorStudentGrades} />
+                      <GradesToTutorMultiSelect
+                        label={t("auth.studentGradeToTutor")}
+                        placeholder={t("auth.selectTargetGrade")}
+                        value={profile.gradesToTutor}
+                        onChange={(value) => updateProfile("gradesToTutor", value)}
+                      />
                       <SettingsField label={t("auth.classLink")} value={profile.classLink} onChange={(value) => updateProfile("classLink", value)} />
                       <SettingsField label={t("auth.classPassword")} value={profile.meetingPassword} onChange={(value) => updateProfile("meetingPassword", value)} />
                     </>

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import * as Select from "@radix-ui/react-select";
 import { ChevronDown, ChevronRight, X, CalendarDays, Clock, User, CheckCircle2 } from "lucide-react";
 import { supabase } from "../../lib/supabase/client";
+import { matchesGradeToTutor, parseGradesToTutor, serializeGradesToTutor } from "../lib/gradesToTutor";
 import { useLanguage } from "../i18n";
 
 // ─── DATA ─────────────────────────────────────────────────────────────────────
@@ -99,10 +100,6 @@ function gradeBand(grade: string) {
   if (gradeNumber >= 7 && gradeNumber <= 9) return "middle school";
   if (gradeNumber >= 10 && gradeNumber <= 12) return "high school";
   return "";
-}
-
-function matchesGradeBand(gradesToTutor: string, band: string) {
-  return gradesToTutor.toLowerCase() === band;
 }
 
 function profileAvailability(profile: TutorProfileRow): Availability {
@@ -525,7 +522,7 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
       }
 
       const matchingTutorProfiles = ((tutorProfiles ?? []) as unknown as TutorProfileRow[])
-        .filter((profile) => matchesGradeBand(profile.grades_to_tutor, band));
+        .filter((profile) => matchesGradeToTutor(profile.grades_to_tutor, band));
       const tutorUids = matchingTutorProfiles.map((profile) => profile.uid);
       const profileNames = new Map<string, string>();
       const weekendStart = beijingSlotInstant(weekendDates.sat, 0);
@@ -620,7 +617,7 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
           id: profile.uid,
           name: profileNames.get(profile.uid) ?? profile.uid,
           grade: profile.grade,
-          gradesToTutor: profile.grades_to_tutor,
+          gradesToTutor: serializeGradesToTutor(parseGradesToTutor(profile.grades_to_tutor)),
           availability: removeBookedSlots(
             profileAvailability(profile),
             bookedClassesByTutor.get(profile.uid) ?? [],

@@ -51,8 +51,8 @@ const translations = {
     "auth.selectRecruitingTeacher": "Select recruiting teacher",
     "auth.school": "School",
     "auth.schoolName": "School name",
-    "auth.studentGradeToTutor": "Student Grade to Tutor",
-    "auth.selectTargetGrade": "Select target grade",
+    "auth.studentGradeToTutor": "Student Grades to Tutor",
+    "auth.selectTargetGrade": "Select target grades",
     "auth.classLink": "Class Link",
     "auth.videoClassLink": "https://example.com/class",
     "auth.classPassword": "Class Password",
@@ -703,6 +703,9 @@ const optionLabels: Record<string, string> = {
   "Elementary school": "小学",
   "Middle school": "初中",
   "High school": "高中",
+  "elementary school": "小学",
+  "middle school": "初中",
+  "high school": "高中",
 };
 
 function interpolate(value: string, vars?: Vars) {
@@ -715,7 +718,9 @@ export function translate(lang: Lang, key: TranslationKey, vars?: Vars) {
 }
 
 export function optionLabel(value: string, lang: Lang) {
-  if (lang === "en") return value;
+  if (lang === "en") {
+    return value.length > 0 ? value[0].toUpperCase() + value.slice(1) : value;
+  }
   if (value.startsWith("Grade ")) {
     return `${value.match(/\d+/)?.[0] ?? value}年级`;
   }

@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import * as Select from "@radix-ui/react-select";
 import { BookOpen, Check, ChevronDown } from "lucide-react";
 import { supabase } from "../lib/supabase/client";
+import { GradesToTutorMultiSelect } from "./components/GradesToTutorMultiSelect";
 import { countryOptionsForLang } from "./data/countries";
 import { LanguageProvider, LanguageSelect, optionLabel, useLanguage, type Lang, type TranslationKey } from "./i18n";
 
@@ -41,7 +42,6 @@ const registerRoleOptions = roleOptions.filter((option) => option.id !== "admini
 const teachers = ["Ivy Wong", "Dr. Sarah Mitchell", "Ms. Karen Liu"];
 const gradeOptions = ["Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6", "Grade 7", "Grade 8", "Grade 9", "Grade 10", "Grade 11", "Grade 12"];
 const englishLevels = ["Beginner", "Intermediate", "Advanced"];
-const tutorStudentGrades = ["Elementary school", "Middle school", "High school"];
 
 function isAlreadyRegisteredError(message: string) {
   const normalized = message.toLowerCase();
@@ -310,7 +310,12 @@ function RegisterFields({
         <Field label={t("auth.wechatId")} placeholder={t("auth.wechatId")} value={wechatId} onChange={setWechatId} />
         <Field label={t("auth.school")} placeholder={t("auth.schoolName")} value={school} onChange={setSchool} />
         <SelectField label={t("auth.grade")} placeholder={t("auth.selectYourGrade")} options={gradeOptions} value={grade} onChange={setGrade} getOptionLabel={labelOption} />
-        <SelectField label={t("auth.studentGradeToTutor")} placeholder={t("auth.selectTargetGrade")} options={tutorStudentGrades} value={gradesToTutor} onChange={setGradesToTutor} getOptionLabel={labelOption} />
+        <GradesToTutorMultiSelect
+          label={t("auth.studentGradeToTutor")}
+          placeholder={t("auth.selectTargetGrade")}
+          value={gradesToTutor}
+          onChange={setGradesToTutor}
+        />
         <Field label={t("auth.classLink")} type="url" placeholder={t("auth.videoClassLink")} value={classLink} onChange={setClassLink} />
         <Field label={t("auth.classPassword")} placeholder={t("auth.classroomPassword")} value={classPassword} onChange={setClassPassword} />
         <Field label={t("auth.howFoundOut")} placeholder={t("auth.howFoundOutPlaceholder")} value={howFoundOut} onChange={setHowFoundOut} />
