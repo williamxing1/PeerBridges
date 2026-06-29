@@ -327,111 +327,22 @@ export function EvaluationPage({ classId }: { classId: string }) {
     }
 
     setSubmitting(true);
-    const createdAt = new Date().toISOString();
-
-    const evaluationPayload = {
-      lesson_id: evaluationClass.id,
-      teacher_uid: evaluationClass.teacherUid,
-      feedback: feedbackValue,
-      stars: rating,
-      created_at: createdAt,
-    };
-
-    const { error: evaluationError } = await supabase.from("evaluations").insert(evaluationPayload);
+    const { error: evaluationError } = await supabase.rpc("secure_submit_evaluation", {
+      p_lesson_id: evaluationClass.id,
+      p_class_description: classDescriptionValue,
+      p_feedback: feedbackValue,
+      p_stars: rating,
+      p_prep_minutes: parsedPrepMinutes,
+      p_evaluation_minutes: parsedEvaluationMinutes,
+      p_assignments: assignments.map((assignment) => ({
+        name: assignment.name.trim(),
+        description: assignment.description.trim(),
+        due_date: assignment.dueDate,
+      })),
+    });
 
     if (evaluationError) {
       setSubmitError(evaluationError.message || t("dashboard.evaluationSubmitError"));
-      setSubmitting(false);
-      return;
-    }
-
-    const { error: deleteAssignmentsError } = await supabase
-      .from("assignments")
-      .delete()
-      .eq("lesson_id", evaluationClass.id)
-      .eq("teacher_uid", evaluationClass.teacherUid)
-      .eq("student_uid", evaluationClass.studentUid);
-
-    if (deleteAssignmentsError) {
-      setSubmitError(deleteAssignmentsError.message || t("dashboard.evaluationSubmitError"));
-      setSubmitting(false);
-      return;
-    }
-
-    if (assignments.length > 0) {
-      const { error: assignmentsError } = await supabase.from("assignments").insert(
-        assignments.map((assignment) => ({
-          lesson_id: evaluationClass.id,
-          student_uid: evaluationClass.studentUid,
-          teacher_uid: evaluationClass.teacherUid,
-          name: assignment.name.trim(),
-          description: assignment.description.trim(),
-          due_date: assignment.dueDate,
-          complete: false,
-        }))
-      );
-
-      if (assignmentsError) {
-        setSubmitError(assignmentsError.message || t("dashboard.evaluationSubmitError"));
-        setSubmitting(false);
-        return;
-      }
-    }
-
-    const { error: deleteVolunteerError } = await supabase
-      .from("volunteer_records")
-      .delete()
-      .eq("class_uid", evaluationClass.id)
-      .eq("tutor_uid", evaluationClass.teacherUid);
-
-    if (deleteVolunteerError) {
-      setSubmitError(deleteVolunteerError.message || t("dashboard.evaluationSubmitError"));
-      setSubmitting(false);
-      return;
-    }
-
-    const volunteerRows = [
-      {
-        record_id: crypto.randomUUID(),
-        tutor_uid: evaluationClass.teacherUid,
-        task_name: `${t("dashboard.classTimeLabel")} - ${evaluationClass.student}`,
-        uploaded_at: createdAt,
-        minutes: classMinutes,
-        class_uid: evaluationClass.id,
-      },
-      {
-        record_id: crypto.randomUUID(),
-        tutor_uid: evaluationClass.teacherUid,
-        task_name: `${t("dashboard.preparationTime")} - ${evaluationClass.student}`,
-        uploaded_at: createdAt,
-        minutes: parsedPrepMinutes,
-        class_uid: evaluationClass.id,
-      },
-      {
-        record_id: crypto.randomUUID(),
-        tutor_uid: evaluationClass.teacherUid,
-        task_name: `${t("dashboard.evaluationTime")} - ${evaluationClass.student}`,
-        uploaded_at: createdAt,
-        minutes: parsedEvaluationMinutes,
-        class_uid: evaluationClass.id,
-      },
-    ];
-
-    const { error: volunteerError } = await supabase.from("volunteer_records").insert(volunteerRows);
-
-    if (volunteerError) {
-      setSubmitError(volunteerError.message || t("dashboard.evaluationSubmitError"));
-      setSubmitting(false);
-      return;
-    }
-
-    const { error: classUpdateError } = await supabase
-      .from("classes")
-      .update({ evaluation_completed: true, description: classDescriptionValue })
-      .eq("lesson_id", evaluationClass.id);
-
-    if (classUpdateError) {
-      setSubmitError(classUpdateError.message || t("dashboard.evaluationSubmitError"));
       setSubmitting(false);
       return;
     }

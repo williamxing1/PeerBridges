@@ -5,6 +5,7 @@ import * as Select from "@radix-ui/react-select";
 import { Check, ChevronDown, Download, FileText, Upload } from "lucide-react";
 import { supabase } from "../../lib/supabase/client";
 import { useLanguage } from "../i18n";
+import { coverImageValidationError, safeExternalUrl } from "../lib/security";
 
 type MediaCategory = "student_material" | "tutor_training" | "volunteer_award";
 
@@ -151,7 +152,7 @@ export function MediaListPage({
               </div>
               <div className="mt-auto p-4">
                 <a
-                  href={material.file_url}
+                  href={safeExternalUrl(material.file_url) ?? "#"}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm text-primary-foreground transition-colors hover:bg-primary/90"
@@ -190,12 +191,32 @@ export function ManageMediaPage() {
       return;
     }
 
-    const extension = coverImage.name.split(".").pop() || "png";
+    const imageError = coverImageValidationError(coverImage);
+    if (imageError) {
+      setError(t(imageError === "type" ? "media.coverTypeInvalid" : "media.coverTooLarge"));
+      setSaving(false);
+      return;
+    }
+
+    const normalizedFileUrl = safeExternalUrl(fileUrl);
+    if (!normalizedFileUrl) {
+      setError(t("media.urlInvalid"));
+      setSaving(false);
+      return;
+    }
+
+    const extensionByType: Record<string, string> = {
+      "image/jpeg": "jpg",
+      "image/png": "png",
+      "image/webp": "webp",
+    };
+    const extension = extensionByType[coverImage.type];
     const objectPath = `covers/${crypto.randomUUID()}.${extension}`;
     const { error: uploadError } = await supabase.storage
       .from("media")
       .upload(objectPath, coverImage, {
         cacheControl: "3600",
+        contentType: coverImage.type,
         upsert: false,
       });
 
@@ -209,7 +230,7 @@ export function ManageMediaPage() {
       category,
       media_name: name.trim(),
       cover_image_path: `media/${objectPath}`,
-      file_url: fileUrl.trim(),
+      file_url: normalizedFileUrl,
     });
 
     if (insertError) {

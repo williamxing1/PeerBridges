@@ -7,6 +7,7 @@ import { BookOpen, Check, ChevronDown } from "lucide-react";
 import { supabase } from "../lib/supabase/client";
 import { GradesToTutorMultiSelect } from "./components/GradesToTutorMultiSelect";
 import { countryOptionsForLang } from "./data/countries";
+import { safeExternalUrl } from "./lib/security";
 import { LanguageProvider, LanguageSelect, optionLabel, useLanguage, type Lang, type TranslationKey } from "./i18n";
 
 type Mode = "login" | "register";
@@ -607,17 +608,36 @@ function AuthPageContent() {
                   return;
                 }
 
-                const createdAt = new Date().toISOString();
-
-                const { error: profileError } = await supabase.from("profiles").upsert({
-                  uid: userId,
-                  role,
-                  name,
-                  email: normalizedEmail,
-                  wechat_id: wechatId,
-                  created_at: createdAt,
-                }, {
-                  onConflict: "uid",
+                const registrationRole = role === "tutor" ? "tutor" : "student";
+                const normalizedClassLink = registrationRole === "tutor"
+                  ? safeExternalUrl(classLink)
+                  : null;
+                if (registrationRole === "tutor" && !normalizedClassLink) {
+                  setError(t("media.urlInvalid"));
+                  return;
+                }
+                const details = registrationRole === "student"
+                  ? {
+                      country,
+                      grade,
+                      english_level: englishLevel,
+                      referrer,
+                      trial_teacher: trialTeacher,
+                    }
+                  : {
+                      school,
+                      grade,
+                      grades_to_tutor: gradesToTutor,
+                      class_link: normalizedClassLink,
+                      meeting_password: classPassword,
+                      how_found_out: howFoundOut,
+                    };
+                const { error: profileError } = await supabase.rpc("register_current_user_profile", {
+                  p_role: registrationRole,
+                  p_name: name,
+                  p_email: normalizedEmail,
+                  p_wechat_id: wechatId,
+                  p_details: details,
                 });
 
                 if (profileError) {
@@ -625,42 +645,7 @@ function AuthPageContent() {
                   return;
                 }
 
-                if (role === "student") {
-                  const { error: studentProfileError } = await supabase.from("student_profiles").upsert({
-                    uid: userId,
-                    country,
-                    grade,
-                    english_level: englishLevel,
-                    referrer,
-                    trial_teacher: trialTeacher,
-                  }, {
-                    onConflict: "uid",
-                  });
-                  if (studentProfileError) {
-                    setError(studentProfileError.message);
-                    return;
-                  }
-                  pushRegisteredUser(userId);
-                } else if (role === "tutor") {
-                  const { error: tutorProfileError } = await supabase.from("tutor_profiles").upsert({
-                    uid: userId,
-                    school,
-                    grade,
-                    grades_to_tutor: gradesToTutor,
-                    class_link: classLink,
-                    meeting_password: classPassword,
-                    how_found_out: howFoundOut,
-                  }, {
-                    onConflict: "uid",
-                  });
-                  if (tutorProfileError) {
-                    setError(tutorProfileError.message);
-                    return;
-                  }
-                  pushRegisteredUser(userId);
-                } else {
-                  pushRegisteredUser(userId);
-                }
+                pushRegisteredUser(userId);
               }
             }}
           >

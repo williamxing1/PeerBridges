@@ -15,6 +15,7 @@ import { CommunicationsPage } from "./components/CommunicationsPage";
 import { LanguageProvider, LanguageSelect, optionLabel, useLanguage } from "./i18n";
 import { countryLabelForValue, countryOptionsForLang } from "./data/countries";
 import { parseGradesToTutor, serializeGradesToTutor } from "./lib/gradesToTutor";
+import { safeExternalUrl } from "./lib/security";
 import { supabase } from "../lib/supabase/client";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as Tabs from "@radix-ui/react-tabs";
@@ -737,18 +738,30 @@ function AccountSettingsDialog({
     setMessage("");
     setError("");
 
-    const { error: authError } = await supabase.auth.updateUser({ email: profile.email });
+    const normalizedClassLink = profile.role === "tutor"
+      ? safeExternalUrl(profile.classLink)
+      : null;
+    if (profile.role === "tutor" && !normalizedClassLink) {
+      setError(t("media.urlInvalid"));
+      setSaving(false);
+      return;
+    }
+
+    const requestedEmail = profile.email.trim();
+    const { data: authUpdate, error: authError } = await supabase.auth.updateUser({ email: requestedEmail });
     if (authError) {
       setError(authError.message);
       setSaving(false);
       return;
     }
 
+    const confirmedEmail = authUpdate.user.email ?? fallbackUser.email;
+    const emailConfirmationPending = confirmedEmail.toLowerCase() !== requestedEmail.toLowerCase();
     const { error: profileError } = await supabase
       .from("profiles")
       .update({
         name: profile.name,
-        email: profile.email,
+        email: confirmedEmail,
         wechat_id: profile.wechatId,
       })
       .eq("uid", profile.uid);
@@ -783,7 +796,7 @@ function AccountSettingsDialog({
           school: profile.school,
           grade: profile.grade,
           grades_to_tutor: profile.gradesToTutor,
-          class_link: profile.classLink,
+          class_link: normalizedClassLink,
           meeting_password: profile.meetingPassword,
         })
         .eq("uid", profile.uid);
@@ -799,11 +812,16 @@ function AccountSettingsDialog({
       uid: profile.uid,
       role: profile.role,
       name: profile.name,
-      email: profile.email,
+      email: confirmedEmail,
     };
+    setProfile((current) => ({
+      ...current,
+      email: confirmedEmail,
+      ...(normalizedClassLink ? { classLink: normalizedClassLink } : {}),
+    }));
     writeStoredUser(updatedUser);
     onUserUpdated(updatedUser);
-    setMessage(t("settings.saved"));
+    setMessage(t(emailConfirmationPending ? "settings.emailConfirmationSent" : "settings.saved"));
     setSaving(false);
   }
 
@@ -990,12 +1008,6 @@ function BlankAvatar({ size = 40 }: { size?: number }) {
   );
 }
 
-function normalizeExternalUrl(url: string) {
-  const trimmed = url.trim();
-  if (/^[a-z][a-z\d+\-.]*:\/\//i.test(trimmed)) return trimmed;
-  return `https://${trimmed}`;
-}
-
 async function handleJoinClass(cls: {
   id: string | number;
   startsAt?: Date;
@@ -1007,15 +1019,17 @@ async function handleJoinClass(cls: {
     const tenMinutes = 10 * 60 * 1000;
 
     if (now >= startsAt - tenMinutes && now <= startsAt + tenMinutes) {
-      await supabase
-        .from("classes")
-        .update({ [attendee === "student" ? "student_attended" : "teacher_attended"]: true })
-        .eq("lesson_id", cls.id);
+      await supabase.rpc("secure_mark_class_attendance", {
+        p_lesson_id: cls.id,
+      });
     }
   }
 
   if (cls.classLink) {
-    window.open(normalizeExternalUrl(cls.classLink), "_blank", "noopener,noreferrer");
+    const safeUrl = safeExternalUrl(cls.classLink);
+    if (safeUrl) {
+      window.open(safeUrl, "_blank", "noopener,noreferrer");
+    }
   }
 }
 
@@ -1667,13 +1681,10 @@ function AssignmentsCard({
       return;
     }
 
-    const { data: completedAssignment, error: completeError } = await supabase
-      .from("assignments")
-      .update({ complete: true })
-      .eq("assignment_id", assignmentId)
-      .eq("student_uid", studentUid)
-      .select("assignment_id")
-      .maybeSingle();
+    const { data: completedAssignment, error: completeError } = await supabase.rpc(
+      "secure_complete_assignment",
+      { p_assignment_id: assignmentId },
+    );
 
     if (completeError || !completedAssignment) {
       setError(completeError?.message || t("dashboard.assignmentCompleteError"));
@@ -2181,10 +2192,10 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
   const studentName = storedUser?.name || t("common.student");
 
   async function cancelOneClass(target: { id: string | number }) {
-    const { error } = await supabase
-      .from("classes")
-      .update({ status: "cancelled" })
-      .eq("lesson_id", target.id);
+    const { error } = await supabase.rpc("secure_cancel_class", {
+      p_lesson_id: target.id,
+      p_series: false,
+    });
 
     if (error) throw error;
 
@@ -2216,19 +2227,12 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
     setCancelError("");
 
     try {
-      const { error: deleteClassesError } = await supabase
-        .from("classes")
-        .delete()
-        .eq("recurring_lesson_id", cancelTarget.recurringLessonId);
+      const { error: cancelSeriesError } = await supabase.rpc("secure_cancel_class", {
+        p_lesson_id: cancelTarget.id,
+        p_series: true,
+      });
 
-      if (deleteClassesError) throw deleteClassesError;
-
-      const { error: deleteRecurringError } = await supabase
-        .from("recurring_classes")
-        .delete()
-        .eq("lesson_id", cancelTarget.recurringLessonId);
-
-      if (deleteRecurringError) throw deleteRecurringError;
+      if (cancelSeriesError) throw cancelSeriesError;
 
       setStudentData((current) => ({
         ...current,
@@ -2597,14 +2601,6 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
       const now = new Date();
       const classColumns = "lesson_id, student_uid, teacher_uid, time, duration, evaluation_completed, student_attended, teacher_attended, student_wants_to_share, recurring_lesson_id, status";
 
-      const { data: allClassRowsData, error: allClassRowsError } = await supabase
-        .from("classes")
-        .select("*");
-      console.log("All classes query result", {
-        error: allClassRowsError,
-        rows: allClassRowsData ?? [],
-      });
-
       const { data: tutorClassRowsData, error: tutorClassesError } = await supabase
         .from("classes")
         .select(classColumns)
@@ -2625,11 +2621,6 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
 
       const tutorClassRows = (tutorClassRowsData ?? []) as ClassRow[];
       const completedClassRows = tutorClassRows.filter((cls) => getClassEnd(cls) < now);
-      console.log("Tutor completed classes query result", {
-        tutorUid,
-        now: now.toISOString(),
-        completedClassRows,
-      });
       const upcomingClassRows = tutorClassRows.filter((cls) => getClassEnd(cls) >= now);
       const classes = [...completedClassRows, ...upcomingClassRows];
       const studentUids = Array.from(new Set(classes.map((cls) => cls.student_uid)));

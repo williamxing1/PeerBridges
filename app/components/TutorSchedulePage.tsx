@@ -621,10 +621,9 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
       return;
     }
 
-    const { error: updateError } = await supabase
-      .from("tutor_profiles")
-      .update(availabilityToUpdate(availability))
-      .eq("uid", tutorUid);
+    const { error: updateError } = await supabase.rpc("secure_save_tutor_availability", {
+      p_availability: availabilityToUpdate(availability),
+    });
 
     if (updateError) {
       setError(updateError.message);

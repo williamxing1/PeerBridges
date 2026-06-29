@@ -138,7 +138,7 @@ type ProfileRow = {
 };
 type ClassRow = {
   lesson_id: string;
-  student_uid: string;
+  student_uid?: string;
   teacher_uid: string;
   time: string;
     duration: number;
@@ -549,7 +549,7 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
 
         const { data: bookedRows, error: bookedError } = await supabase
           .from("classes")
-          .select("lesson_id, student_uid, teacher_uid, time, duration, status")
+          .select("lesson_id, teacher_uid, time, duration, status")
           .in("teacher_uid", tutorUids)
           .gte("time", weekendStart.toISOString())
           .lt("time", weekendEnd.toISOString())
@@ -717,48 +717,16 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
       return false;
     }
 
-    let recurringLessonId: string | null = null;
-
-    if (recurring) {
-      const { data: recurringRow, error: recurringError } = await supabase
-        .from("recurring_classes")
-        .insert({
-          student_uid: studentUid,
-          teacher_uid: tutor.id,
-          time: startsAt.toISOString(),
-          duration,
-        })
-        .select("lesson_id")
-        .single();
-
-      if (recurringError || !recurringRow) {
-        setError(recurringError?.message || t("schedule.slotAlreadyBooked"));
-        return false;
-      }
-
-      recurringLessonId = recurringRow.lesson_id;
-    }
-
-    const { error: insertError } = await supabase.from("classes").insert({
-      student_uid: studentUid,
-      teacher_uid: tutor.id,
-      time: startsAt.toISOString(),
-      duration,
-      ...(recurringLessonId ? { recurring_lesson_id: recurringLessonId } : {}),
+    const { error: insertError } = await supabase.rpc("secure_book_class", {
+      p_teacher_uid: tutor.id,
+      p_time: startsAt.toISOString(),
+      p_duration: duration,
+      p_recurring: recurring,
     });
 
     if (insertError) {
       setError(insertError.message);
       return false;
-    }
-
-    if (recurringLessonId) {
-      const { error: generateError } = await supabase.rpc("generate_recurring_classes");
-
-      if (generateError) {
-        setError(generateError.message);
-        return false;
-      }
     }
 
     setTutors((current) =>

@@ -57,12 +57,7 @@ export function CommunicationsPage({
       setLoading(true);
       setError("");
 
-      const { data, error: contactsError } = await supabase
-        .from("profiles")
-        .select("uid, role, name, email, wechat_id")
-        .in("role", allowedRoles)
-        .order("role", { ascending: true })
-        .order("name", { ascending: true });
+      const { data, error: contactsError } = await supabase.rpc("get_allowed_contacts");
 
       if (contactsError) {
         if (!cancelled) {
@@ -73,7 +68,11 @@ export function CommunicationsPage({
       }
 
       if (!cancelled) {
-        setContacts((data ?? []) as Contact[]);
+        setContacts(
+          ((data ?? []) as Contact[])
+            .filter((contact) => allowedRoles.includes(contact.role))
+            .sort((a, b) => a.role.localeCompare(b.role) || a.name.localeCompare(b.name)),
+        );
         setSelectedUids([]);
         setLoading(false);
       }

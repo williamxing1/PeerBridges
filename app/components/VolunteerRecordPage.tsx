@@ -137,7 +137,6 @@ export function VolunteerRecordPage({ lang }: { lang: string }) {
 
     const parsedHours = Number(hours || 0);
     const parsedMinutes = Number(minutes || 0);
-    const uploadedAt = new Date();
     const totalMinutes = parsedHours * 60 + parsedMinutes;
     const tutorUid = await getTutorUid();
 
@@ -146,24 +145,22 @@ export function VolunteerRecordPage({ lang }: { lang: string }) {
       return;
     }
 
-    const { data, error: insertError } = await supabase
-      .from("volunteer_records")
-      .insert({
-        record_id: crypto.randomUUID(),
-        tutor_uid: tutorUid,
-        task_name: taskName,
-        uploaded_at: uploadedAt.toISOString(),
-        minutes: totalMinutes,
-      })
-      .select("record_id, tutor_uid, task_name, uploaded_at, minutes")
-      .single();
+    const { data, error: insertError } = await supabase.rpc("secure_add_volunteer_record", {
+      p_task_name: taskName.trim(),
+      p_minutes: totalMinutes,
+    });
 
     if (insertError) {
       setError(insertError.message);
       return;
     }
 
-    setEntries((current) => [toVolunteerEntry(data as VolunteerRecordRow, lang), ...current]);
+    const insertedRecord = ((data ?? []) as VolunteerRecordRow[])[0];
+    if (!insertedRecord) {
+      setError(t("common.unexpectedError"));
+      return;
+    }
+    setEntries((current) => [toVolunteerEntry(insertedRecord, lang), ...current]);
     setTaskName("");
     setHours("");
     setMinutes("");
