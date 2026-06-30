@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./styles/index.css";
 
 export const metadata: Metadata = {
-  title: "TutorFlow",
+  title: "PeerBridges",
   description: "Student dashboard for one-on-one tutoring"
 };
 

@@ -503,7 +503,7 @@ function AuthPageContent() {
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <BookOpen size={16} />
           </div>
-          <span className="hidden text-card-foreground sm:block">TutorFlow</span>
+          <span className="hidden text-card-foreground sm:block">PeerBridges</span>
         </div>
         <div className="flex-1" />
         <LanguageSelect />

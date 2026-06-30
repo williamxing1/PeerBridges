@@ -1433,7 +1433,7 @@ function TopNav({
         <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
           <BookOpen size={16} className="text-primary-foreground" />
         </div>
-        <span className="text-card-foreground hidden sm:block">TutorFlow</span>
+        <span className="text-card-foreground hidden sm:block">PeerBridges</span>
       </div>
 
       <div className="flex-1" />
@@ -1560,7 +1560,7 @@ function Sidebar({
             <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
               <BookOpen size={16} className="text-primary-foreground" />
             </div>
-            <span className="text-card-foreground">TutorFlow</span>
+            <span className="text-card-foreground">PeerBridges</span>
           </div>
           <button
             type="button"
