@@ -136,7 +136,7 @@ export function MediaListPage({
           {materials.map((material) => (
             <article
               key={material.training_material_id}
-              className="flex h-[24rem] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm"
+              className="flex min-h-[22rem] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm sm:h-[24rem]"
             >
               <div className="flex items-center justify-center border-b border-border px-4 py-3 text-center">
                 <h3 className="line-clamp-2 text-base font-medium leading-snug text-card-foreground">

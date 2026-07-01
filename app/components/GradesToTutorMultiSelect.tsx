@@ -33,6 +33,7 @@ export function GradesToTutorMultiSelect({
             type="button"
             className="mt-2 flex h-11 w-full items-center justify-between gap-3 rounded-xl border border-border bg-background px-3.5 text-left text-sm text-foreground outline-none transition focus:border-primary/40 focus:bg-card"
             aria-label={label}
+            aria-required="true"
           >
             <span className={`min-w-0 truncate ${displayValue ? "" : "text-muted-foreground"}`}>
               {displayValue || placeholder}

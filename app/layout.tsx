@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./styles/index.css";
+import { LanguageProvider } from "./i18n";
 
 export const metadata: Metadata = {
   title: "PeerBridges",
@@ -13,7 +14,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body><LanguageProvider>{children}</LanguageProvider></body>
     </html>
   );
 }

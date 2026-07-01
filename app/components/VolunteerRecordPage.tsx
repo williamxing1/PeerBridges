@@ -151,6 +151,7 @@ export function VolunteerRecordPage({ lang }: { lang: string }) {
     });
 
     if (insertError) {
+      console.error("secure_add_volunteer_record failed", insertError);
       setError(insertError.message);
       return;
     }
@@ -276,8 +277,37 @@ export function VolunteerRecordPage({ lang }: { lang: string }) {
       )}
 
       <div className="overflow-hidden rounded-2xl border border-border bg-card">
-        <div className="overflow-x-auto">
-          <table className="min-w-[720px] w-full text-left text-sm">
+        <div className="lg:hidden">
+          {loading ? (
+            <div className="px-5 py-10 text-center text-sm text-muted-foreground">
+              {t("volunteer.loading")}
+            </div>
+          ) : sortedEntries.length === 0 ? (
+            <div className="px-5 py-10 text-center text-sm text-muted-foreground">
+              {t("volunteer.empty")}
+            </div>
+          ) : (
+            <div className="divide-y divide-border">
+              {sortedEntries.map((entry, index) => (
+                <article key={entry.id} className="p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="break-words text-sm text-card-foreground">{entry.taskName}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{entry.uploadedAt}</p>
+                    </div>
+                    <span className="shrink-0 rounded-lg bg-muted px-2.5 py-1 text-xs text-card-foreground">
+                      {formatDuration(entry.totalMinutes, t)}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">#{index + 1}</p>
+                </article>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="hidden overflow-x-auto lg:block">
+          <table className="w-full min-w-[720px] text-left text-sm">
             <thead className="bg-muted text-muted-foreground">
               <tr>
                 <th className="px-5 py-3 font-medium">#</th>

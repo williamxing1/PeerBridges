@@ -143,7 +143,7 @@ function profileToAvailability(profile: TutorProfileAvailability | null) {
     };
   }
 
-  const unset = AVAILABILITY_COLUMNS.every((column) => profile[column] === null);
+  const unset = AVAILABILITY_COLUMNS.some((column) => profile[column] === null);
 
   return {
     availability: {
@@ -626,6 +626,7 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
     });
 
     if (updateError) {
+      console.error("secure_save_tutor_availability failed", updateError);
       setError(updateError.message);
       setSaving(false);
       return;

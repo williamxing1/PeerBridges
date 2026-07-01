@@ -12,7 +12,7 @@ import { VolunteerRecordPage } from "./components/VolunteerRecordPage";
 import { AdminDashboardPage } from "./components/AdminDashboardPage";
 import { ManageMediaPage, MediaListPage } from "./components/MediaPages";
 import { CommunicationsPage } from "./components/CommunicationsPage";
-import { LanguageProvider, LanguageSelect, optionLabel, useLanguage } from "./i18n";
+import { LanguageSelect, optionLabel, useLanguage } from "./i18n";
 import { countryLabelForValue, countryOptionsForLang } from "./data/countries";
 import { parseGradesToTutor, serializeGradesToTutor } from "./lib/gradesToTutor";
 import { safeExternalUrl } from "./lib/security";
@@ -39,6 +39,7 @@ import {
   X,
   ChevronRight,
   Users,
+  AlertTriangle,
 } from "lucide-react";
 
 {/* MARKER-MAKE-KIT-INVOKED */}
@@ -151,6 +152,10 @@ const storedUserKey = "tutorflow-user";
 const storedUserUpdatedEvent = "tutorflow-user-updated";
 const gradeOptions = ["Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6", "Grade 7", "Grade 8", "Grade 9", "Grade 10", "Grade 11", "Grade 12"];
 const englishLevels = ["Beginner", "Intermediate", "Advanced"];
+const tutorAvailabilityColumns = (["sat", "sun"] as const).flatMap((day) =>
+  ["700", "730", "800", "830", "900", "930", "1000", "1030", "1100", "1130"]
+    .map((time) => `${day}_${time}`),
+);
 
 type StoredUser = {
   uid: string;
@@ -270,6 +275,7 @@ type UIClass = {
 type TutorDashboardData = {
   loading: boolean;
   error: string;
+  availabilityNeedsSetup: boolean;
   stats: {
     totalClasses: number;
     studentsTaught: number;
@@ -283,6 +289,7 @@ type TutorDashboardData = {
 const emptyTutorDashboardData: TutorDashboardData = {
   loading: true,
   error: "",
+  availabilityNeedsSetup: false,
   stats: {
     totalClasses: 0,
     studentsTaught: 0,
@@ -848,6 +855,7 @@ function AccountSettingsDialog({
 
     const { error: rpcError } = await supabase.rpc("delete_current_user");
     if (rpcError) {
+      console.error("delete_current_user failed", rpcError);
       setError(t("settings.deleteRpcRequired", { message: rpcError.message }));
       return;
     }
@@ -1019,9 +1027,12 @@ async function handleJoinClass(cls: {
     const tenMinutes = 10 * 60 * 1000;
 
     if (now >= startsAt - tenMinutes && now <= startsAt + tenMinutes) {
-      await supabase.rpc("secure_mark_class_attendance", {
+      const { error: attendanceError } = await supabase.rpc("secure_mark_class_attendance", {
         p_lesson_id: cls.id,
       });
+      if (attendanceError) {
+        console.error("secure_mark_class_attendance failed", attendanceError);
+      }
     }
   }
 
@@ -1418,7 +1429,7 @@ function TopNav({
 
   return (
     <>
-    <header className="h-16 bg-card border-b border-border flex items-center px-4 sm:px-6 gap-3 sm:gap-4 shrink-0 z-10">
+    <header className="z-10 flex h-16 min-w-0 shrink-0 items-center gap-2 border-b border-border bg-card px-3 sm:gap-4 sm:px-6">
       <button
         type="button"
         onClick={onMenuClick}
@@ -1429,7 +1440,7 @@ function TopNav({
       </button>
 
       {/* Logo */}
-      <div className="flex items-center gap-2 mr-2">
+      <div className="mr-0 flex shrink-0 items-center gap-2 sm:mr-2">
         <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
           <BookOpen size={16} className="text-primary-foreground" />
         </div>
@@ -1443,7 +1454,7 @@ function TopNav({
       {/* Profile dropdown */}
       <DropdownMenu.Root>
         <DropdownMenu.Trigger asChild>
-          <button className="flex items-center gap-2.5 pl-2 pr-3 py-1.5 rounded-xl hover:bg-accent transition-colors cursor-pointer outline-none border border-transparent hover:border-border">
+          <button className="flex shrink-0 cursor-pointer items-center gap-2.5 rounded-xl border border-transparent p-1.5 outline-none transition-colors hover:border-border hover:bg-accent sm:pl-2 sm:pr-3">
             <BlankAvatar size={32} />
             <span className="hidden min-w-0 text-left sm:block">
               <span className="block truncate text-sm text-card-foreground">{user.name}</span>
@@ -1687,6 +1698,10 @@ function AssignmentsCard({
     );
 
     if (completeError || !completedAssignment) {
+      console.error(
+        "secure_complete_assignment failed",
+        completeError ?? { message: "RPC returned no completed assignment" },
+      );
       setError(completeError?.message || t("dashboard.assignmentCompleteError"));
       setCompletingId("");
       return;
@@ -1931,7 +1946,7 @@ function UpcomingClassHero({
   const displayPersonName = cls.displayPersonName ?? cls.teacher;
   return (
     <>
-    <div className="bg-gradient-to-br from-primary/10 via-accent to-secondary border border-primary/20 rounded-2xl p-6 flex flex-col sm:flex-row gap-6 items-start sm:items-center">
+    <div className="flex flex-col items-start gap-5 rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/10 via-accent to-secondary p-4 sm:flex-row sm:items-center sm:gap-6 sm:p-6">
       <div className="flex-1 flex flex-col gap-4">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs text-primary bg-primary/10 px-2.5 py-1 rounded-full">
@@ -2215,6 +2230,7 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
       setCancelMessage(t("dashboard.classCancelled"));
       setCancelTarget(null);
     } catch (error) {
+      console.error("Failed to cancel class", error);
       setCancelError(error instanceof Error ? error.message : t("dashboard.cancelClassError"));
     } finally {
       setCancelling(false);
@@ -2241,6 +2257,7 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
       setCancelMessage(t("dashboard.classCancelled"));
       setCancelTarget(null);
     } catch (error) {
+      console.error("Failed to cancel recurring class series", error);
       setCancelError(error instanceof Error ? error.message : t("dashboard.cancelClassError"));
     } finally {
       setCancelling(false);
@@ -2665,15 +2682,32 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
         return;
       }
 
-      const { data: tutorDetails } = await supabase
+      const tutorDetailsSelect = ["class_link", "meeting_password", ...tutorAvailabilityColumns].join(", ");
+      const { data: tutorDetails, error: tutorDetailsError } = await supabase
         .from("tutor_profiles")
-        .select("class_link, meeting_password")
+        .select(tutorDetailsSelect)
         .eq("uid", tutorUid)
         .maybeSingle();
+
+      if (tutorDetailsError) {
+        if (!cancelled) {
+          setDashboardData({
+            ...emptyTutorDashboardData,
+            loading: false,
+            error: tutorDetailsError.message,
+          });
+        }
+        return;
+      }
+
+      const tutorDetailsRow = tutorDetails as Record<string, string | boolean | null> | null;
+      const availabilityNeedsSetup =
+        !tutorDetailsRow ||
+        tutorAvailabilityColumns.some((column) => tutorDetailsRow[column] === null);
       const meetingDetails = tutorDetails
         ? {
-            classLink: tutorDetails.class_link,
-            meetingPassword: tutorDetails.meeting_password,
+            classLink: String(tutorDetailsRow?.class_link ?? ""),
+            meetingPassword: String(tutorDetailsRow?.meeting_password ?? ""),
           }
         : undefined;
 
@@ -2697,6 +2731,7 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
         setDashboardData({
           loading: false,
           error: "",
+          availabilityNeedsSetup,
           stats: {
             totalClasses: completedClassRows.length,
             studentsTaught: completedStudentUids.length,
@@ -2740,6 +2775,27 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
       {dashboardData.error && (
         <div className="rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {dashboardData.error}
+        </div>
+      )}
+
+      {!dashboardData.loading && !dashboardData.error && dashboardData.availabilityNeedsSetup && (
+        <div className="flex flex-col gap-4 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-amber-950 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-amber-200">
+              <AlertTriangle size={20} aria-hidden="true" />
+            </span>
+            <div>
+              <p className="font-medium">{t("dashboard.availabilityRequired")}</p>
+              <p className="mt-1 text-sm text-amber-800">{t("dashboard.availabilityRequiredHelp")}</p>
+            </div>
+          </div>
+          <Link
+            href="/tutor-schedule"
+            className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-amber-900 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-amber-800"
+          >
+            {t("dashboard.setAvailability")}
+            <ChevronRight size={16} />
+          </Link>
         </div>
       )}
 
@@ -2801,25 +2857,23 @@ export function AppShell({
   requiredRole?: AccountRole;
 }) {
   return (
-    <LanguageProvider>
-      <Suspense fallback={<LoadingFallback />}>
-        <AppShellContent
-          activePage={activePage}
-          user={user}
-          dashboardHref={dashboardHref}
-          scheduleHref={scheduleHref}
-          recordHref={recordHref}
-          trainingHref={trainingHref}
-          volunteerAwardHref={volunteerAwardHref}
-          studentMaterialsHref={studentMaterialsHref}
-          manageMediaHref={manageMediaHref}
-          communicationsHref={communicationsHref}
-          requiredRole={requiredRole}
-        >
-          {children}
-        </AppShellContent>
-      </Suspense>
-    </LanguageProvider>
+    <Suspense fallback={<LoadingFallback />}>
+      <AppShellContent
+        activePage={activePage}
+        user={user}
+        dashboardHref={dashboardHref}
+        scheduleHref={scheduleHref}
+        recordHref={recordHref}
+        trainingHref={trainingHref}
+        volunteerAwardHref={volunteerAwardHref}
+        studentMaterialsHref={studentMaterialsHref}
+        manageMediaHref={manageMediaHref}
+        communicationsHref={communicationsHref}
+        requiredRole={requiredRole}
+      >
+        {children}
+      </AppShellContent>
+    </Suspense>
   );
 }
 

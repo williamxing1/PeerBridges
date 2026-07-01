@@ -60,6 +60,7 @@ export function CommunicationsPage({
       const { data, error: contactsError } = await supabase.rpc("get_allowed_contacts");
 
       if (contactsError) {
+        console.error("get_allowed_contacts failed", contactsError);
         if (!cancelled) {
           setError(contactsError.message);
           setLoading(false);
@@ -101,11 +102,6 @@ export function CommunicationsPage({
   });
 
   function toggleContact(uid: string) {
-    if (!isAdmin) {
-      setSelectedUids([uid]);
-      return;
-    }
-
     setSelectedUids((current) =>
       current.includes(uid) ? current.filter((selectedUid) => selectedUid !== uid) : [...current, uid]
     );
@@ -116,7 +112,7 @@ export function CommunicationsPage({
   }
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex min-w-0 flex-col gap-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h2 className="text-foreground">{t("communications.title")}</h2>
@@ -153,8 +149,8 @@ export function CommunicationsPage({
         </div>
       )}
 
-      <div className="grid min-h-[28rem] grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(20rem,0.9fr)]">
-        <section className="flex min-h-0 flex-col rounded-2xl border border-border bg-card p-4">
+      <div className="grid min-h-[28rem] min-w-0 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(20rem,0.9fr)]">
+        <section className="flex min-h-0 min-w-0 flex-col rounded-2xl border border-border bg-card p-4">
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h3 className="text-sm text-card-foreground">
@@ -236,9 +232,9 @@ export function CommunicationsPage({
               {t("communications.noMatches")}
             </div>
           ) : (
-            <div className="min-h-0 overflow-x-auto rounded-xl border border-border">
-              <div className="min-w-[42rem]">
-                <div className="grid grid-cols-[2.2rem_minmax(8rem,1fr)_7rem_minmax(11rem,1.2fr)] gap-3 border-b border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            <div className="min-h-0 overflow-hidden rounded-xl border border-border">
+              <div className="min-w-0">
+                <div className="hidden grid-cols-[2.2rem_minmax(8rem,1fr)_7rem_minmax(11rem,1.2fr)] gap-3 border-b border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground md:grid">
                   <span />
                   <span>{t("common.name")}</span>
                   <span>{t("common.type")}</span>
@@ -253,7 +249,7 @@ export function CommunicationsPage({
                       key={contact.uid}
                       type="button"
                       onClick={() => toggleContact(contact.uid)}
-                      className={`grid w-full grid-cols-[2.2rem_minmax(8rem,1fr)_7rem_minmax(11rem,1.2fr)] items-center gap-3 border-b border-border px-3 py-2.5 text-left text-sm transition-colors last:border-b-0 ${
+                      className={`grid w-full grid-cols-[2.2rem_minmax(0,1fr)] items-center gap-3 border-b border-border px-3 py-3 text-left text-sm transition-colors last:border-b-0 md:grid-cols-[2.2rem_minmax(8rem,1fr)_7rem_minmax(11rem,1.2fr)] md:py-2.5 ${
                         selected
                           ? "bg-primary/10"
                           : "bg-background hover:bg-accent"
@@ -266,9 +262,14 @@ export function CommunicationsPage({
                       >
                         {selected && <span className="h-2 w-2 rounded-full bg-primary-foreground" />}
                       </span>
-                      <span className="truncate text-card-foreground">{contact.name}</span>
-                      <span className="truncate text-xs text-muted-foreground">{roleLabels[contact.role]}</span>
-                      <span className="truncate text-xs text-muted-foreground">
+                      <span className="min-w-0">
+                        <span className="block truncate text-card-foreground">{contact.name}</span>
+                        <span className="mt-0.5 block truncate text-xs text-muted-foreground md:hidden">
+                          {roleLabels[contact.role]} · {mode === "wechat" ? contact.wechat_id : contact.email}
+                        </span>
+                      </span>
+                      <span className="hidden truncate text-xs text-muted-foreground md:block">{roleLabels[contact.role]}</span>
+                      <span className="hidden truncate text-xs text-muted-foreground md:block">
                         {mode === "wechat" ? contact.wechat_id : contact.email}
                       </span>
                     </button>
@@ -280,8 +281,8 @@ export function CommunicationsPage({
           )}
         </section>
 
-        <aside className="flex flex-col rounded-2xl border border-border bg-card p-4">
-          <div className="mb-4 flex items-start justify-between gap-3">
+        <aside className="flex min-w-0 flex-col rounded-2xl border border-border bg-card p-4">
+          <div className="mb-4 flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-start">
             <div>
               <h3 className="text-sm text-card-foreground">
                 {mode === "wechat" ? t("communications.selectedWechatIds") : t("communications.selectedEmails")}
@@ -293,7 +294,7 @@ export function CommunicationsPage({
             {mode === "email" && (
               <a
                 href={mailtoHref}
-                className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs transition-colors ${
+                className={`inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs transition-colors sm:shrink-0 ${
                   selectedContacts.length > 0
                     ? "bg-primary text-primary-foreground hover:bg-primary/90"
                     : "pointer-events-none bg-muted text-muted-foreground"

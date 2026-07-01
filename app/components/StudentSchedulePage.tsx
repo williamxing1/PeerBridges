@@ -109,6 +109,10 @@ function profileAvailability(profile: TutorProfileRow): Availability {
   };
 }
 
+function hasCompleteAvailability(profile: TutorProfileRow) {
+  return AVAILABILITY_COLUMNS.every((column) => profile[column] !== null);
+}
+
 function BlankAvatar({ size = 40 }: { size?: number }) {
   return (
     <span
@@ -522,7 +526,10 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
       }
 
       const matchingTutorProfiles = ((tutorProfiles ?? []) as unknown as TutorProfileRow[])
-        .filter((profile) => matchesGradeToTutor(profile.grades_to_tutor, band));
+        .filter((profile) =>
+          hasCompleteAvailability(profile) &&
+          matchesGradeToTutor(profile.grades_to_tutor, band)
+        );
       const tutorUids = matchingTutorProfiles.map((profile) => profile.uid);
       const profileNames = new Map<string, string>();
       const weekendStart = beijingSlotInstant(weekendDates.sat, 0);
@@ -725,6 +732,7 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
     });
 
     if (insertError) {
+      console.error("secure_book_class failed", insertError);
       setError(insertError.message);
       return false;
     }

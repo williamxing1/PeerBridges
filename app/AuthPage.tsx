@@ -8,10 +8,17 @@ import { supabase } from "../lib/supabase/client";
 import { GradesToTutorMultiSelect } from "./components/GradesToTutorMultiSelect";
 import { countryOptionsForLang } from "./data/countries";
 import { safeExternalUrl } from "./lib/security";
-import { LanguageProvider, LanguageSelect, optionLabel, useLanguage, type Lang, type TranslationKey } from "./i18n";
+import { LanguageSelect, optionLabel, useLanguage, type Lang, type TranslationKey } from "./i18n";
 
 type Mode = "login" | "register";
 type Role = "student" | "tutor" | "administrator";
+type PendingRegistration = {
+  role: "student" | "tutor";
+  name: string;
+  email: string;
+  wechatId: string;
+  details: Record<string, string>;
+};
 type StoredUser = {
   uid: string;
   role: Role | "admin";
@@ -40,13 +47,26 @@ const roleOptions: Array<{ id: Role; labelKey: TranslationKey }> = [
 
 const registerRoleOptions = roleOptions.filter((option) => option.id !== "administrator");
 
-const teachers = ["Ivy Wong", "Dr. Sarah Mitchell", "Ms. Karen Liu"];
+const teachers = ["杨老师"];
 const gradeOptions = ["Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6", "Grade 7", "Grade 8", "Grade 9", "Grade 10", "Grade 11", "Grade 12"];
 const englishLevels = ["Beginner", "Intermediate", "Advanced"];
 
 function isAlreadyRegisteredError(message: string) {
   const normalized = message.toLowerCase();
   return normalized.includes("already registered") || normalized.includes("already exists");
+}
+
+function isPendingRegistration(value: unknown): value is PendingRegistration {
+  if (!value || typeof value !== "object") return false;
+  const registration = value as Partial<PendingRegistration>;
+  return (
+    (registration.role === "student" || registration.role === "tutor") &&
+    typeof registration.name === "string" &&
+    typeof registration.email === "string" &&
+    typeof registration.wechatId === "string" &&
+    Boolean(registration.details) &&
+    typeof registration.details === "object"
+  );
 }
 
 function Field({
@@ -98,7 +118,7 @@ function SelectField({
   return (
     <label className="block">
       <span className="text-sm font-medium text-card-foreground">{label}</span>
-      <Select.Root value={value} onValueChange={onChange}>
+      <Select.Root required value={value} onValueChange={onChange}>
         <Select.Trigger className="mt-2 flex h-11 w-full items-center justify-between rounded-xl border border-border bg-background px-3.5 text-sm text-foreground outline-none transition data-[placeholder]:text-muted-foreground focus:border-primary/40 focus:bg-card">
           <Select.Value placeholder={placeholder} />
           <Select.Icon>
@@ -144,7 +164,7 @@ function CountrySelect({
   return (
     <label className="block">
       <span className="text-sm font-medium text-card-foreground">{label}</span>
-      <Select.Root value={value} onValueChange={onChange}>
+      <Select.Root required value={value} onValueChange={onChange}>
         <Select.Trigger className="mt-2 flex h-11 w-full items-center justify-between rounded-xl border border-border bg-background px-3.5 text-sm text-foreground outline-none transition data-[placeholder]:text-muted-foreground focus:border-primary/40 focus:bg-card">
           <Select.Value placeholder={placeholder} />
           <Select.Icon>
@@ -438,11 +458,53 @@ function AuthPageContent() {
         return;
       }
 
-      const { data: profile } = await supabase
+      const { data: existingProfile, error: existingProfileError } = await supabase
         .from("profiles")
         .select("uid, role, name, email, wechat_id")
         .eq("uid", data.user.id)
         .maybeSingle();
+
+      if (existingProfileError) {
+        console.error("Failed to load profile after authentication", existingProfileError);
+      }
+
+      let profile = existingProfile;
+      if (!profile) {
+        const pendingRegistration = data.user.user_metadata?.pending_registration;
+        if (isPendingRegistration(pendingRegistration)) {
+          const { error: registrationError } = await supabase.rpc("register_current_user_profile", {
+            p_role: pendingRegistration.role,
+            p_name: pendingRegistration.name,
+            p_email: pendingRegistration.email,
+            p_wechat_id: pendingRegistration.wechatId,
+            p_details: pendingRegistration.details,
+          });
+
+          if (registrationError) {
+            console.error("register_current_user_profile failed after email confirmation", registrationError);
+            if (!cancelled) {
+              setError(registrationError.message);
+              setCheckingSession(false);
+            }
+            return;
+          }
+
+          profile = {
+            uid: data.user.id,
+            role: pendingRegistration.role,
+            name: pendingRegistration.name,
+            email: pendingRegistration.email,
+            wechat_id: pendingRegistration.wechatId,
+          };
+
+          const { error: metadataError } = await supabase.auth.updateUser({
+            data: { pending_registration: null },
+          });
+          if (metadataError) {
+            console.error("Failed to clear completed registration metadata", metadataError);
+          }
+        }
+      }
 
       if (!profile || cancelled) {
         if (!cancelled) setCheckingSession(false);
@@ -496,10 +558,21 @@ function AuthPageContent() {
     router.push(getPostAuthPath(role));
   }
 
+  function hasAllRequiredRegistrationFields() {
+    const sharedFields = [name, registerEmail, registerPassword, wechatId];
+    const roleFields = role === "student"
+      ? [country, grade, englishLevel, referrer, trialTeacher]
+      : role === "tutor"
+        ? [school, grade, gradesToTutor, classLink, classPassword, howFoundOut]
+        : [];
+
+    return [...sharedFields, ...roleFields].every((value) => value.trim().length > 0);
+  }
+
   return (
     <main className="flex min-h-screen flex-col bg-background text-foreground">
-      <header className="flex h-16 shrink-0 items-center gap-4 border-b border-border bg-card px-4 sm:px-6">
-        <div className="flex items-center gap-2 mr-2">
+      <header className="flex h-16 min-w-0 shrink-0 items-center gap-2 border-b border-border bg-card px-3 sm:gap-4 sm:px-6">
+        <div className="mr-0 flex shrink-0 items-center gap-2 sm:mr-2">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <BookOpen size={16} />
           </div>
@@ -578,13 +651,54 @@ function AuthPageContent() {
 
                 router.push(getPostAuthPath(profile.role));
               } else if (mode === "register") {
+                if (!hasAllRequiredRegistrationFields()) {
+                  setError(t("auth.requiredFields"));
+                  return;
+                }
+
                 const normalizedEmail = registerEmail.trim();
+                const registrationRole = role === "tutor" ? "tutor" : "student";
+                const normalizedClassLink = registrationRole === "tutor"
+                  ? safeExternalUrl(classLink)
+                  : null;
+                if (registrationRole === "tutor" && !normalizedClassLink) {
+                  setError(t("media.urlInvalid"));
+                  return;
+                }
+                const details: Record<string, string> = registrationRole === "student"
+                  ? {
+                      country,
+                      grade,
+                      english_level: englishLevel,
+                      referrer,
+                      trial_teacher: trialTeacher,
+                    }
+                  : {
+                      school,
+                      grade,
+                      grades_to_tutor: gradesToTutor,
+                      class_link: normalizedClassLink!,
+                      meeting_password: classPassword,
+                      how_found_out: howFoundOut,
+                    };
+                const pendingRegistration: PendingRegistration = {
+                  role: registrationRole,
+                  name: name.trim(),
+                  email: normalizedEmail,
+                  wechatId: wechatId.trim(),
+                  details,
+                };
                 const { data, error } = await supabase.auth.signUp({
                   email: normalizedEmail,
                   password: registerPassword,
+                  options: {
+                    emailRedirectTo: window.location.origin,
+                    data: { pending_registration: pendingRegistration },
+                  },
                 });
 
                 let userId = data.user?.id;
+                let hasSession = Boolean(data.session);
 
                 if (error && isAlreadyRegisteredError(error.message)) {
                   const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
@@ -598,6 +712,7 @@ function AuthPageContent() {
                   }
 
                   userId = signInData.user.id;
+                  hasSession = Boolean(signInData.session);
                 } else if (error) {
                   setError(error.message);
                   return;
@@ -608,30 +723,11 @@ function AuthPageContent() {
                   return;
                 }
 
-                const registrationRole = role === "tutor" ? "tutor" : "student";
-                const normalizedClassLink = registrationRole === "tutor"
-                  ? safeExternalUrl(classLink)
-                  : null;
-                if (registrationRole === "tutor" && !normalizedClassLink) {
-                  setError(t("media.urlInvalid"));
+                if (!hasSession) {
+                  router.push(`/check-email?email=${encodeURIComponent(normalizedEmail)}`);
                   return;
                 }
-                const details = registrationRole === "student"
-                  ? {
-                      country,
-                      grade,
-                      english_level: englishLevel,
-                      referrer,
-                      trial_teacher: trialTeacher,
-                    }
-                  : {
-                      school,
-                      grade,
-                      grades_to_tutor: gradesToTutor,
-                      class_link: normalizedClassLink,
-                      meeting_password: classPassword,
-                      how_found_out: howFoundOut,
-                    };
+
                 const { error: profileError } = await supabase.rpc("register_current_user_profile", {
                   p_role: registrationRole,
                   p_name: name,
@@ -641,6 +737,7 @@ function AuthPageContent() {
                 });
 
                 if (profileError) {
+                  console.error("register_current_user_profile failed", profileError);
                   setError(profileError.message);
                   return;
                 }
@@ -722,10 +819,8 @@ function LoadingFallback() {
 
 export default function AuthPage() {
   return (
-    <LanguageProvider>
-      <Suspense fallback={<LoadingFallback />}>
-        <AuthPageContent />
-      </Suspense>
-    </LanguageProvider>
+    <Suspense fallback={<LoadingFallback />}>
+      <AuthPageContent />
+    </Suspense>
   );
 }

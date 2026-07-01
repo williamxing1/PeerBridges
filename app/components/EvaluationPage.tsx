@@ -342,6 +342,7 @@ export function EvaluationPage({ classId }: { classId: string }) {
     });
 
     if (evaluationError) {
+      console.error("secure_submit_evaluation failed", evaluationError);
       setSubmitError(evaluationError.message || t("dashboard.evaluationSubmitError"));
       setSubmitting(false);
       return;

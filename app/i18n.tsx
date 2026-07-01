@@ -1,8 +1,8 @@
 "use client";
 
-import { createContext, type ReactNode, useContext, useMemo, useState } from "react";
+import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import * as Select from "@radix-ui/react-select";
-import { ChevronDown } from "lucide-react";
+import { Check, ChevronDown, Languages } from "lucide-react";
 
 export type Lang = "en" | "zh";
 
@@ -12,6 +12,7 @@ const LANGUAGES: Array<{ code: Lang; label: string }> = [
   { code: "en", label: "English" },
   { code: "zh", label: "中文" },
 ];
+const languageStorageKey = "peerbridges-language";
 
 const translations = {
   en: {
@@ -60,6 +61,11 @@ const translations = {
     "auth.howFoundOut": "How did you find out about this?",
     "auth.howFoundOutPlaceholder": "Referral, school, social media...",
     "auth.authUserError": "Could not create or load the auth user.",
+    "auth.requiredFields": "Complete every registration field before creating your account.",
+    "auth.checkInbox": "Check your inbox for a confirmation email",
+    "auth.confirmationEmailSent": "We sent a confirmation link to the email address below.",
+    "auth.confirmationHelp": "Open the email and confirm your account. You will be signed in when you return.",
+    "auth.backToLogin": "Back to login",
 
     "role.student": "Student",
     "role.tutor": "Tutor",
@@ -265,6 +271,9 @@ const translations = {
     "dashboard.hello": "Hello, {name}!",
     "dashboard.studentOverview": "Here's your learning overview for today.",
     "dashboard.tutorOverview": "Here's your teaching overview for today.",
+    "dashboard.availabilityRequired": "Set your teaching availability",
+    "dashboard.availabilityRequiredHelp": "Students cannot find or book you until you complete your schedule.",
+    "dashboard.setAvailability": "Set availability",
     "dashboard.viewEvaluation": "View Evaluation",
     "dashboard.writeEvaluation": "Write Evaluation",
     "dashboard.classWith": "Class with {name}",
@@ -404,6 +413,11 @@ const translations = {
     "auth.howFoundOut": "你是如何了解到我们的？",
     "auth.howFoundOutPlaceholder": "推荐、学校、社交媒体等...",
     "auth.authUserError": "无法创建或加载认证用户。",
+    "auth.requiredFields": "请填写所有注册信息后再创建账户。",
+    "auth.checkInbox": "请查收确认邮件",
+    "auth.confirmationEmailSent": "我们已向以下邮箱发送确认链接。",
+    "auth.confirmationHelp": "打开邮件并确认账户，返回后你将自动登录。",
+    "auth.backToLogin": "返回登录",
 
     "role.student": "学生",
     "role.tutor": "老师",
@@ -609,6 +623,9 @@ const translations = {
     "dashboard.hello": "你好，{name}！",
     "dashboard.studentOverview": "这是你今天的学习概览。",
     "dashboard.tutorOverview": "这是你今天的教学概览。",
+    "dashboard.availabilityRequired": "请设置你的授课时间",
+    "dashboard.availabilityRequiredHelp": "完成时间安排后，学生才能找到并预约你。",
+    "dashboard.setAvailability": "设置可用时间",
     "dashboard.viewEvaluation": "查看评价",
     "dashboard.writeEvaluation": "填写评价",
     "dashboard.classWith": "与{name}的课程",
@@ -746,7 +763,31 @@ type LanguageContextValue = {
 const LanguageContext = createContext<LanguageContextValue | null>(null);
 
 export function LanguageProvider({ children }: { children: ReactNode }) {
-  const [lang, setLang] = useState<Lang>("en");
+  const [lang, setLangState] = useState<Lang>("en");
+
+  const setLang = useCallback((nextLang: Lang) => {
+    setLangState(nextLang);
+    localStorage.setItem(languageStorageKey, nextLang);
+    document.documentElement.lang = nextLang === "zh" ? "zh-CN" : "en";
+  }, []);
+
+  useEffect(() => {
+    const savedLanguage = localStorage.getItem(languageStorageKey);
+    if (savedLanguage === "en" || savedLanguage === "zh") {
+      setLangState(savedLanguage);
+      document.documentElement.lang = savedLanguage === "zh" ? "zh-CN" : "en";
+    }
+
+    function syncLanguage(event: StorageEvent) {
+      if (event.key !== languageStorageKey || (event.newValue !== "en" && event.newValue !== "zh")) return;
+      setLangState(event.newValue);
+      document.documentElement.lang = event.newValue === "zh" ? "zh-CN" : "en";
+    }
+
+    window.addEventListener("storage", syncLanguage);
+    return () => window.removeEventListener("storage", syncLanguage);
+  }, []);
+
   const value = useMemo(
     () => ({
       lang,
@@ -769,25 +810,39 @@ export function useLanguage() {
 
 export function LanguageSelect() {
   const { lang, setLang } = useLanguage();
+  const currentLanguage = LANGUAGES.find((language) => language.code === lang)!;
 
   return (
     <Select.Root value={lang} onValueChange={(value) => setLang(value as Lang)}>
-      <Select.Trigger className="flex items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5 text-sm text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-card-foreground sm:px-3">
-        <Select.Value />
+      <Select.Trigger
+        aria-label="Language / 语言"
+        className="flex h-10 shrink-0 items-center gap-1.5 rounded-xl border border-primary/30 bg-primary/10 px-2.5 text-sm font-medium text-card-foreground outline-none transition-colors hover:border-primary/50 hover:bg-primary/15 focus:ring-2 focus:ring-primary/20 sm:gap-2 sm:px-3"
+      >
+        <Languages size={17} className="text-primary" />
+        <span className="hidden lg:inline">Language / 语言:</span>
+        <span>{currentLanguage.label}</span>
         <Select.Icon>
-          <ChevronDown size={14} />
+          <ChevronDown size={14} className="text-muted-foreground" />
         </Select.Icon>
       </Select.Trigger>
       <Select.Portal>
-        <Select.Content className="z-50 overflow-hidden rounded-xl border border-border bg-popover shadow-xl">
+        <Select.Content
+          position="popper"
+          sideOffset={6}
+          align="end"
+          className="z-50 min-w-[11rem] overflow-hidden rounded-xl border border-border bg-popover shadow-xl"
+        >
           <Select.Viewport className="p-1">
             {LANGUAGES.map((language) => (
               <Select.Item
                 key={language.code}
                 value={language.code}
-                className="cursor-pointer rounded-lg px-3 py-2 text-sm text-popover-foreground outline-none data-[highlighted]:bg-accent"
+                className="flex cursor-pointer items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-sm text-popover-foreground outline-none data-[highlighted]:bg-accent"
               >
                 <Select.ItemText>{language.label}</Select.ItemText>
+                <Select.ItemIndicator>
+                  <Check size={15} className="text-primary" />
+                </Select.ItemIndicator>
               </Select.Item>
             ))}
           </Select.Viewport>
