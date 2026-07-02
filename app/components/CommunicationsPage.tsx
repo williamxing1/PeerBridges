@@ -34,7 +34,7 @@ export function CommunicationsPage({
   const allowedRoles = useMemo<ContactRole[]>(() => {
     if (viewerRole === "student") return ["tutor", "admin"];
     if (viewerRole === "tutor") return ["student", "admin"];
-    return ["student", "tutor"];
+    return ["student", "tutor", "admin"];
   }, [viewerRole]);
 
   const helpKey =
