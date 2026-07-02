@@ -218,6 +218,7 @@ type EvaluationRow = {
 };
 type AssignmentRow = {
   assignment_id: string;
+  lesson_id: string | null;
   student_uid: string;
   teacher_uid: string;
   name: string;
@@ -234,6 +235,8 @@ type UIAssignment = {
   id: string;
   name: string;
   description: string;
+  assignedBy: string;
+  assignedOn: string;
   due: string;
   status: "assigned" | "dueSoon" | "overdue";
   dueSoon: boolean;
@@ -1946,6 +1949,9 @@ function AssignmentsCard({
               </span>
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">{a.description}</p>
+            <p className="text-xs text-muted-foreground">
+              {t("dashboard.assignedByOn", { teacher: a.assignedBy, date: a.assignedOn })}
+            </p>
             <div className="mt-1 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-1 text-xs text-muted-foreground">
                 <CalendarDays size={11} />
@@ -2560,7 +2566,7 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
       const today = new Date();
       const { data: assignmentRows, error: assignmentsError } = await supabase
         .from("assignments")
-        .select("assignment_id, student_uid, teacher_uid, name, description, due_date, complete")
+        .select("assignment_id, lesson_id, student_uid, teacher_uid, name, description, due_date, complete")
         .eq("student_uid", studentUid)
         .eq("complete", false)
         .order("due_date", { ascending: true });
@@ -2570,6 +2576,61 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
           setStudentData({ ...emptyStudentDashboardData, loading: false, error: assignmentsError.message });
         }
         return;
+      }
+
+      const assignmentData = (assignmentRows ?? []) as AssignmentRow[];
+      const missingAssignmentTeacherUids = Array.from(
+        new Set(
+          assignmentData
+            .map((assignment) => assignment.teacher_uid)
+            .filter((teacherUid) => !teacherNames.has(teacherUid))
+        )
+      );
+      if (missingAssignmentTeacherUids.length > 0) {
+        const { data: assignmentTeachers, error: assignmentTeachersError } = await supabase
+          .from("profiles")
+          .select("uid, name")
+          .in("uid", missingAssignmentTeacherUids);
+
+        if (assignmentTeachersError) {
+          if (!cancelled) {
+            setStudentData({ ...emptyStudentDashboardData, loading: false, error: assignmentTeachersError.message });
+          }
+          return;
+        }
+
+        assignmentTeachers?.forEach((teacher) => {
+          teacherNames.set(teacher.uid, teacher.name);
+        });
+      }
+
+      const missingAssignmentLessonIds = Array.from(
+        new Set(
+          assignmentData
+            .map((assignment) => assignment.lesson_id)
+            .filter((lessonId): lessonId is string => lessonId !== null)
+            .filter((lessonId) => !evaluations.has(lessonId))
+        )
+      );
+      if (missingAssignmentLessonIds.length > 0) {
+        const { data: assignmentEvaluations, error: assignmentEvaluationsError } = await supabase
+          .from("evaluations")
+          .select("evaluation_id, lesson_id, feedback, stars, created_at")
+          .in("lesson_id", missingAssignmentLessonIds)
+          .order("created_at", { ascending: false });
+
+        if (assignmentEvaluationsError) {
+          if (!cancelled) {
+            setStudentData({ ...emptyStudentDashboardData, loading: false, error: assignmentEvaluationsError.message });
+          }
+          return;
+        }
+
+        ((assignmentEvaluations ?? []) as EvaluationRow[]).forEach((evaluation) => {
+          if (!evaluations.has(evaluation.lesson_id)) {
+            evaluations.set(evaluation.lesson_id, evaluation);
+          }
+        });
       }
 
       const studentClassLabels = {
@@ -2594,17 +2655,32 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
             date: formatClassDateFromInstant(getClassStart(latestClass), lang),
           }
         : null;
-      const assignments = ((assignmentRows ?? []) as AssignmentRow[]).map((assignment) => {
+      const classStartByLessonId = new Map(
+        classes.map((cls) => [cls.lesson_id, getClassStart(cls)] as const)
+      );
+      const assignments = assignmentData.map((assignment) => {
         const deadline = aoeDeadlineInstant(assignment.due_date);
         const msUntilDue = deadline.getTime() - today.getTime();
         const overdue = msUntilDue < 0;
         const dueSoon = !overdue && msUntilDue <= 48 * 60 * 60 * 1000;
         const status: UIAssignment["status"] = overdue ? "overdue" : dueSoon ? "dueSoon" : "assigned";
+        const assignmentEvaluation = assignment.lesson_id
+          ? evaluations.get(assignment.lesson_id)
+          : undefined;
+        const assignedAt = assignmentEvaluation
+          ? new Date(assignmentEvaluation.created_at)
+          : assignment.lesson_id
+            ? classStartByLessonId.get(assignment.lesson_id)
+            : undefined;
 
         return {
           id: assignment.assignment_id,
           name: assignment.name,
           description: assignment.description,
+          assignedBy: teacherNames.get(assignment.teacher_uid)?.trim() || t("common.tutor"),
+          assignedOn: assignedAt
+            ? formatClassDateFromInstant(assignedAt, lang)
+            : t("common.unknownDate"),
           due: formatAoeDeadlineLocal(assignment.due_date, lang),
           status,
           dueSoon,
