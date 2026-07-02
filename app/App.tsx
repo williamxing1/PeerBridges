@@ -150,6 +150,8 @@ const COMPLETED_CLASSES = [
 
 const storedUserKey = "tutorflow-user";
 const storedUserUpdatedEvent = "tutorflow-user-updated";
+const pendingEmailChangeKey = "peerbridges-pending-email-change";
+const emailChangeConfirmationParam = "emailChangeConfirmation";
 const gradeOptions = ["Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6", "Grade 7", "Grade 8", "Grade 9", "Grade 10", "Grade 11", "Grade 12"];
 const englishLevels = ["Beginner", "Intermediate", "Advanced"];
 const tutorAvailabilityColumns = (["sat", "sun"] as const).flatMap((day) =>
@@ -162,6 +164,12 @@ type StoredUser = {
   role: AccountRole;
   name: string;
   email: string;
+};
+
+type PendingEmailChange = {
+  uid: string;
+  requestedEmail: string;
+  stage: "awaiting_both" | "partially_confirmed";
 };
 type AccountRole = "student" | "tutor" | "admin";
 type SettingsProfile = {
@@ -487,6 +495,36 @@ function writeStoredUser(user: StoredUser) {
   window.dispatchEvent(new CustomEvent<StoredUser>(storedUserUpdatedEvent, { detail: user }));
 }
 
+function readPendingEmailChange() {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const stored = localStorage.getItem(pendingEmailChangeKey);
+    if (!stored) return null;
+    const pending = JSON.parse(stored) as Partial<PendingEmailChange>;
+    if (
+      typeof pending.uid !== "string" ||
+      typeof pending.requestedEmail !== "string" ||
+      (pending.stage !== "awaiting_both" && pending.stage !== "partially_confirmed")
+    ) {
+      return null;
+    }
+    return pending as PendingEmailChange;
+  } catch {
+    return null;
+  }
+}
+
+function writePendingEmailChange(pending: PendingEmailChange) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(pendingEmailChangeKey, JSON.stringify(pending));
+}
+
+function clearPendingEmailChange() {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(pendingEmailChangeKey);
+}
+
 function clearStoredAuthState() {
   if (typeof window === "undefined") return;
 
@@ -636,10 +674,20 @@ function AccountSettingsDialog({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [messageKind, setMessageKind] = useState<"success" | "pending">("success");
   const [error, setError] = useState("");
 
   function updateProfile(key: keyof SettingsProfile, value: string) {
     setProfile((current) => ({ ...current, [key]: value }));
+  }
+
+  function replaceEmailChangeConfirmationStatus(status: "pending" | "success") {
+    const url = new URL(window.location.href);
+    url.searchParams.set(emailChangeConfirmationParam, status);
+    url.searchParams.delete("message");
+    url.searchParams.delete("sb");
+    url.hash = "";
+    router.replace(`${url.pathname}${url.search}`);
   }
 
   useEffect(() => {
@@ -650,6 +698,7 @@ function AccountSettingsDialog({
     async function loadSettings() {
       setLoading(true);
       setMessage("");
+      setMessageKind("success");
       setError("");
 
       const { data: authData, error: authError } = await supabase.auth.getUser();
@@ -662,6 +711,50 @@ function AccountSettingsDialog({
           setLoading(false);
         }
         return;
+      }
+
+      const authEmail = authData.user?.email?.trim() ?? "";
+      const authPendingEmail = authData.user?.new_email?.trim() ?? "";
+      const isEmailChangeConfirmation = new URLSearchParams(window.location.search)
+        .has(emailChangeConfirmationParam);
+      let pendingEmailChange = readPendingEmailChange();
+      if (pendingEmailChange?.uid !== uid) {
+        pendingEmailChange = null;
+      }
+
+      if (isEmailChangeConfirmation) {
+        const requestedEmail = pendingEmailChange?.requestedEmail || authPendingEmail;
+        if (requestedEmail && authEmail.toLowerCase() !== requestedEmail.toLowerCase()) {
+          pendingEmailChange = {
+            uid,
+            requestedEmail,
+            stage: "partially_confirmed",
+          };
+          writePendingEmailChange(pendingEmailChange);
+          setMessageKind("pending");
+          setMessage(t("settings.emailPartiallyConfirmed"));
+          replaceEmailChangeConfirmationStatus("pending");
+        } else {
+          clearPendingEmailChange();
+          pendingEmailChange = null;
+          setMessageKind("success");
+          setMessage(t("settings.emailChanged"));
+          replaceEmailChangeConfirmationStatus("success");
+        }
+      } else if (pendingEmailChange) {
+        if (authEmail.toLowerCase() === pendingEmailChange.requestedEmail.toLowerCase()) {
+          clearPendingEmailChange();
+          pendingEmailChange = null;
+          setMessageKind("success");
+          setMessage(t("settings.emailChanged"));
+        } else {
+          setMessageKind("pending");
+          setMessage(t(
+            pendingEmailChange.stage === "partially_confirmed"
+              ? "settings.emailPartiallyConfirmed"
+              : "settings.emailConfirmationSent"
+          ));
+        }
       }
 
       const { data: baseProfile, error: profileError } = await supabase
@@ -682,7 +775,7 @@ function AccountSettingsDialog({
         uid,
         role: baseProfile.role,
         name: baseProfile.name,
-        email: baseProfile.email,
+        email: pendingEmailChange?.requestedEmail ?? baseProfile.email,
         wechatId: baseProfile.wechat_id,
         country: "",
         grade: "",
@@ -743,6 +836,7 @@ function AccountSettingsDialog({
   async function handleSave() {
     setSaving(true);
     setMessage("");
+    setMessageKind("success");
     setError("");
 
     const normalizedClassLink = profile.role === "tutor"
@@ -755,15 +849,55 @@ function AccountSettingsDialog({
     }
 
     const requestedEmail = profile.email.trim();
-    const { data: authUpdate, error: authError } = await supabase.auth.updateUser({ email: requestedEmail });
-    if (authError) {
-      setError(authError.message);
+    const { data: currentAuth, error: currentAuthError } = await supabase.auth.getUser();
+    if (currentAuthError || !currentAuth.user) {
+      console.error("Failed to load the current user before saving settings", currentAuthError);
+      setError(currentAuthError?.message ?? t("settings.noSignedInUser"));
       setSaving(false);
       return;
     }
 
-    const confirmedEmail = authUpdate.user.email ?? fallbackUser.email;
-    const emailConfirmationPending = confirmedEmail.toLowerCase() !== requestedEmail.toLowerCase();
+    const currentEmail = currentAuth.user.email?.trim() ?? fallbackUser.email;
+    const existingPendingEmailChange = readPendingEmailChange();
+    const matchesPendingEmailChange =
+      existingPendingEmailChange?.uid === profile.uid &&
+      existingPendingEmailChange.requestedEmail.toLowerCase() === requestedEmail.toLowerCase() &&
+      currentEmail.toLowerCase() !== requestedEmail.toLowerCase();
+    const emailChanged =
+      currentEmail.toLowerCase() !== requestedEmail.toLowerCase() &&
+      !matchesPendingEmailChange;
+    let confirmedEmail = currentEmail;
+    let emailConfirmationPending = matchesPendingEmailChange;
+
+    if (emailChanged) {
+      const confirmationUrl = new URL(window.location.href);
+      confirmationUrl.searchParams.set(emailChangeConfirmationParam, "pending");
+      confirmationUrl.searchParams.delete("message");
+      confirmationUrl.searchParams.delete("sb");
+      confirmationUrl.hash = "";
+
+      const { data: authUpdate, error: authError } = await supabase.auth.updateUser(
+        { email: requestedEmail },
+        { emailRedirectTo: confirmationUrl.toString() }
+      );
+      if (authError) {
+        console.error("Failed to request an email change", authError);
+        setError(authError.message);
+        setSaving(false);
+        return;
+      }
+
+      confirmedEmail = authUpdate.user.email ?? currentEmail;
+      emailConfirmationPending = confirmedEmail.toLowerCase() !== requestedEmail.toLowerCase();
+      if (emailConfirmationPending) {
+        writePendingEmailChange({
+          uid: profile.uid,
+          requestedEmail,
+          stage: "awaiting_both",
+        });
+      }
+    }
+
     const { error: profileError } = await supabase
       .from("profiles")
       .update({
@@ -823,23 +957,50 @@ function AccountSettingsDialog({
     };
     setProfile((current) => ({
       ...current,
-      email: confirmedEmail,
+      email: emailConfirmationPending ? requestedEmail : confirmedEmail,
       ...(normalizedClassLink ? { classLink: normalizedClassLink } : {}),
     }));
     writeStoredUser(updatedUser);
     onUserUpdated(updatedUser);
-    setMessage(t(emailConfirmationPending ? "settings.emailConfirmationSent" : "settings.saved"));
+    if (emailConfirmationPending) {
+      setMessageKind("pending");
+      setMessage(t("settings.emailConfirmationSent"));
+    } else {
+      const pendingEmailChange = readPendingEmailChange();
+      if (
+        pendingEmailChange?.uid === profile.uid &&
+        confirmedEmail.toLowerCase() !== pendingEmailChange.requestedEmail.toLowerCase()
+      ) {
+        setMessageKind("pending");
+        setMessage(t(
+          pendingEmailChange.stage === "partially_confirmed"
+            ? "settings.emailPartiallyConfirmed"
+            : "settings.emailConfirmationSent"
+        ));
+      } else {
+        setMessageKind("success");
+        setMessage(t("settings.saved"));
+      }
+    }
     setSaving(false);
   }
 
   async function handleResetPassword() {
     setMessage("");
     setError("");
-    const { error: resetError } = await supabase.auth.resetPasswordForEmail(profile.email, {
-      redirectTo: window.location.origin,
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    if (authError || !authData.user?.email) {
+      console.error("Failed to load the current user before sending a password reset email", authError);
+      setError(authError?.message ?? t("settings.noSignedInUser"));
+      return;
+    }
+
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(authData.user.email, {
+      redirectTo: `${window.location.origin}/reset-password?type=recovery`,
     });
 
     if (resetError) {
+      console.error("Failed to send password reset email", resetError);
       setError(resetError.message);
       return;
     }
@@ -978,7 +1139,11 @@ function AccountSettingsDialog({
               )}
               <div className="min-w-0 text-sm">
                 {error && <p className="text-destructive">{error}</p>}
-                {message && <p className="text-emerald-600">{message}</p>}
+                {message && (
+                  <p className={messageKind === "pending" ? "text-amber-700" : "text-emerald-600"}>
+                    {message}
+                  </p>
+                )}
               </div>
             </div>
           </section>
@@ -1418,8 +1583,28 @@ function TopNav({
   onUserUpdated: (user: StoredUser) => void;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const { t } = useLanguage();
+
+  useEffect(() => {
+    if (searchParams.has(emailChangeConfirmationParam)) {
+      setSettingsOpen(true);
+    }
+  }, [searchParams]);
+
+  function handleSettingsOpenChange(nextOpen: boolean) {
+    setSettingsOpen(nextOpen);
+    if (!nextOpen && searchParams.has(emailChangeConfirmationParam)) {
+      const nextSearchParams = new URLSearchParams(searchParams.toString());
+      nextSearchParams.delete(emailChangeConfirmationParam);
+      nextSearchParams.delete("message");
+      nextSearchParams.delete("sb");
+      const nextSearch = nextSearchParams.toString();
+      router.replace(`${pathname}${nextSearch ? `?${nextSearch}` : ""}`);
+    }
+  }
 
   async function handleSignOut() {
     await supabase.auth.signOut();
@@ -1490,7 +1675,7 @@ function TopNav({
     </header>
     <AccountSettingsDialog
       open={settingsOpen}
-      onOpenChange={setSettingsOpen}
+      onOpenChange={handleSettingsOpenChange}
       fallbackUser={user}
       onUserUpdated={onUserUpdated}
     />

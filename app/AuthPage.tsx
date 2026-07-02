@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
 import * as Select from "@radix-ui/react-select";
 import { BookOpen, Check, ChevronDown } from "lucide-react";
 import { supabase } from "../lib/supabase/client";
@@ -54,6 +55,10 @@ const englishLevels = ["Beginner", "Intermediate", "Advanced"];
 function isAlreadyRegisteredError(message: string) {
   const normalized = message.toLowerCase();
   return normalized.includes("already registered") || normalized.includes("already exists");
+}
+
+function isDuplicateEmailError(error: { code?: string; message: string }) {
+  return error.code === "23505" || isAlreadyRegisteredError(error.message);
 }
 
 function isPendingRegistration(value: unknown): value is PendingRegistration {
@@ -265,7 +270,15 @@ function LoginFields({ t, email, setEmail, password, setPassword }: LoginFieldsP
   return (
     <div className="grid gap-4">
       <Field label={t("auth.email")} type="email" placeholder={t("auth.emailPlaceholder")} value={email} onChange={setEmail} />
-      <Field label={t("auth.password")} type="password" placeholder={t("auth.enterPassword")} minLength={6} value={password} onChange={setPassword} />
+      <div>
+        <Field label={t("auth.password")} type="password" placeholder={t("auth.enterPassword")} minLength={6} value={password} onChange={setPassword} />
+        <Link
+          href="/forgot-password"
+          className="mt-2 block w-fit text-sm text-primary transition-colors hover:text-primary/80"
+        >
+          {t("auth.forgotPassword")}
+        </Link>
+      </div>
     </div>
   );
 }
@@ -483,7 +496,11 @@ function AuthPageContent() {
           if (registrationError) {
             console.error("register_current_user_profile failed after email confirmation", registrationError);
             if (!cancelled) {
-              setError(registrationError.message);
+              setError(
+                isDuplicateEmailError(registrationError)
+                  ? t("auth.emailAlreadyRegistered")
+                  : registrationError.message
+              );
               setCheckingSession(false);
             }
             return;
@@ -697,26 +714,22 @@ function AuthPageContent() {
                   },
                 });
 
-                let userId = data.user?.id;
-                let hasSession = Boolean(data.session);
-
-                if (error && isAlreadyRegisteredError(error.message)) {
-                  const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-                    email: normalizedEmail,
-                    password: registerPassword,
-                  });
-
-                  if (signInError) {
-                    setError(signInError.message);
+                if (error) {
+                  if (isDuplicateEmailError(error)) {
+                    setError(t("auth.emailAlreadyRegistered"));
                     return;
                   }
-
-                  userId = signInData.user.id;
-                  hasSession = Boolean(signInData.session);
-                } else if (error) {
                   setError(error.message);
                   return;
                 }
+
+                if (Array.isArray(data.user?.identities) && data.user.identities.length === 0) {
+                  setError(t("auth.emailAlreadyRegistered"));
+                  return;
+                }
+
+                const userId = data.user?.id;
+                const hasSession = Boolean(data.session);
 
                 if (!userId) {
                   setError(t("auth.authUserError"));
@@ -738,7 +751,11 @@ function AuthPageContent() {
 
                 if (profileError) {
                   console.error("register_current_user_profile failed", profileError);
-                  setError(profileError.message);
+                  setError(
+                    isDuplicateEmailError(profileError)
+                      ? t("auth.emailAlreadyRegistered")
+                      : profileError.message
+                  );
                   return;
                 }
 
