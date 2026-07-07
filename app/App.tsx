@@ -3928,6 +3928,23 @@ function LoadingFallback() {
   return <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">{t("common.loading")}</div>;
 }
 
+// Temporary signed-in-page feedback link. Remove this component and its usage
+// in AppShellContent when the external feedback form is no longer needed.
+function TemporaryFeedbackLink() {
+  return (
+    <a
+      href="https://form.jotform.com/261875934177067"
+      target="_blank"
+      rel="noopener noreferrer"
+      className="fixed bottom-4 right-4 z-50 flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-full border border-border bg-card px-4 py-3 text-sm font-medium text-card-foreground shadow-xl transition-colors hover:bg-accent focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+      aria-label="Bug Report / Feature Request"
+    >
+      <CircleHelp size={18} className="shrink-0 text-primary" />
+      <span>Bug Report / Feature Request</span>
+    </a>
+  );
+}
+
 export function AppShell({
   activePage,
   children,
@@ -4069,7 +4086,7 @@ function AppShellContent({
 
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
-        .select("uid, role, name, email, notification_method, rules_acknowledged_at")
+        .select("uid, role, name, email, notification_method, rules_acknowledged_at, time_zone")
         .eq("uid", authData.user.id)
         .maybeSingle();
 
@@ -4101,6 +4118,17 @@ function AppShellContent({
         email: profile.email,
       };
       writeStoredUser(currentUser);
+
+      const browserTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (browserTimeZone && profile.time_zone !== browserTimeZone) {
+        void supabase
+          .from("profiles")
+          .update({ time_zone: browserTimeZone })
+          .eq("uid", profile.uid)
+          .then(({ error }) => {
+            if (error) console.error("Failed to update profile time zone", error);
+          });
+      }
 
       if (!cancelled) {
         setStoredUser(currentUser);
@@ -4205,6 +4233,7 @@ function AppShellContent({
           }}
         />
       )}
+      {requiredRole && <TemporaryFeedbackLink />}
     </div>
   );
 }
