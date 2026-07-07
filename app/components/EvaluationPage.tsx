@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { ArrowLeft, Plus, Star, Trash2 } from "lucide-react";
 import { useLanguage } from "../i18n";
 import { supabase } from "../../lib/supabase/client";
+import { dispatchReminderEmails } from "../lib/reminderEmails";
 
 const storedUserKey = "tutorflow-user";
 
@@ -348,6 +349,7 @@ export function EvaluationPage({ classId }: { classId: string }) {
       return;
     }
 
+    void dispatchReminderEmails();
     router.push("/tutor-dashboard");
   }
 

@@ -1,21 +1,30 @@
 "use client";
 
-import type { ReactNode } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { Suspense } from "react";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { StudentSchedulePage } from "./components/StudentSchedulePage";
-import { GradesToTutorMultiSelect } from "./components/GradesToTutorMultiSelect";
 import { TutorSchedulePage } from "./components/TutorSchedulePage";
 import { VolunteerRecordPage } from "./components/VolunteerRecordPage";
 import { AdminDashboardPage } from "./components/AdminDashboardPage";
 import { ManageMediaPage, MediaListPage } from "./components/MediaPages";
 import { CommunicationsPage } from "./components/CommunicationsPage";
+import { StudentSpeakingSamplesPage } from "./components/SpeakingSamplesPage";
+import { AccountRulesDialog } from "./components/AccountRulesDialog";
 import { LanguageSelect, optionLabel, useLanguage } from "./i18n";
 import { countryLabelForValue, countryOptionsForLang } from "./data/countries";
-import { parseGradesToTutor, serializeGradesToTutor } from "./lib/gradesToTutor";
 import { safeExternalUrl } from "./lib/security";
+import { beijingCalendarToday, currentBeijingWeekendDate } from "./lib/weekend";
+import { isValidMeetingPassword, normalizeVoovMeetingUrl } from "./lib/tutorMeeting";
+import { dispatchReminderEmails } from "./lib/reminderEmails";
+import {
+  emptyStrikeStatus,
+  isLateCancellation,
+  refreshStrikeStatus,
+  type StrikeStatus,
+} from "./lib/strikes";
 import { supabase } from "../lib/supabase/client";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as Tabs from "@radix-ui/react-tabs";
@@ -31,6 +40,7 @@ import {
   FileText,
   GraduationCap,
   MessageSquare,
+  Mic2,
   CheckCircle2,
   Settings,
   LogOut,
@@ -40,6 +50,10 @@ import {
   ChevronRight,
   Users,
   AlertTriangle,
+  CircleHelp,
+  Eye,
+  EyeOff,
+  KeyRound,
 } from "lucide-react";
 
 {/* MARKER-MAKE-KIT-INVOKED */}
@@ -153,11 +167,6 @@ const storedUserUpdatedEvent = "tutorflow-user-updated";
 const pendingEmailChangeKey = "peerbridges-pending-email-change";
 const emailChangeConfirmationParam = "emailChangeConfirmation";
 const gradeOptions = ["Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6", "Grade 7", "Grade 8", "Grade 9", "Grade 10", "Grade 11", "Grade 12"];
-const englishLevels = ["Beginner", "Intermediate", "Advanced"];
-const tutorAvailabilityColumns = (["sat", "sun"] as const).flatMap((day) =>
-  ["700", "730", "800", "830", "900", "930", "1000", "1030", "1100", "1130"]
-    .map((time) => `${day}_${time}`),
-);
 
 type StoredUser = {
   uid: string;
@@ -177,12 +186,9 @@ type SettingsProfile = {
   role: "student" | "tutor" | "admin";
   name: string;
   email: string;
-  wechatId: string;
   country: string;
   grade: string;
-  englishLevel: string;
   school: string;
-  gradesToTutor: string;
   classLink: string;
   meetingPassword: string;
 };
@@ -200,11 +206,19 @@ type ClassRow = {
   recurring_lesson_id?: string | null;
   status?: string | null;
 };
+type RecurringClassRow = {
+  lesson_id: string;
+  student_uid: string;
+  teacher_uid: string;
+  time: string;
+  duration: number;
+};
 type BasicProfile = {
   uid: string;
+  role?: "student" | "tutor" | "admin" | "deleted";
   name: string;
-  email?: string;
-  wechat_id?: string;
+  student_wechat_id?: string | null;
+  parent_wechat_id?: string | null;
 };
 type VolunteerRecordRow = {
   minutes: number;
@@ -231,6 +245,15 @@ type TutorDetailsRow = {
   class_link: string;
   meeting_password: string;
 };
+type StudentTutorDetails = {
+  classLink: string;
+  meetingPassword: string;
+  tutorWechatId: string;
+  parentWechatId: string;
+  tutorEmail: string;
+  parentEmail: string;
+  preferredCommunication: "wechat" | "email" | "";
+};
 type UIAssignment = {
   id: string;
   name: string;
@@ -251,10 +274,12 @@ type StudentFeedback = {
 type StudentDashboardData = {
   loading: boolean;
   error: string;
+  strikeStatus: StrikeStatus;
   feedback: StudentFeedback | null;
   assignments: UIAssignment[];
   upcomingClasses: UIClass[];
   completedClasses: UIClass[];
+  recurringClasses: UIRecurringClass[];
 };
 
 type UIClass = {
@@ -282,10 +307,28 @@ type UIClass = {
   meetingPassword?: string;
   feedback?: typeof LAST_FEEDBACK;
 };
+type CancelClassTarget = {
+  id: string | number;
+  recurringLessonId?: string | null;
+  startsAt?: Date;
+};
+type UIRecurringClass = {
+  id: string;
+  nextLessonId: string;
+  nextStartsAt: Date;
+  personUid: string;
+  personRole: "student" | "tutor";
+  personName: string;
+  day: string;
+  time: string;
+  duration: number;
+  skippedDates: string[];
+};
 
 type TutorDashboardData = {
   loading: boolean;
   error: string;
+  strikeStatus: StrikeStatus;
   availabilityNeedsSetup: boolean;
   stats: {
     totalClasses: number;
@@ -295,11 +338,13 @@ type TutorDashboardData = {
   pendingEvaluations: UIClass[];
   upcomingClasses: UIClass[];
   completedClasses: UIClass[];
+  recurringClasses: UIRecurringClass[];
 };
 
 const emptyTutorDashboardData: TutorDashboardData = {
   loading: true,
   error: "",
+  strikeStatus: emptyStrikeStatus,
   availabilityNeedsSetup: false,
   stats: {
     totalClasses: 0,
@@ -309,15 +354,18 @@ const emptyTutorDashboardData: TutorDashboardData = {
   pendingEvaluations: [],
   upcomingClasses: [],
   completedClasses: [],
+  recurringClasses: [],
 };
 
 const emptyStudentDashboardData: StudentDashboardData = {
   loading: true,
   error: "",
+  strikeStatus: emptyStrikeStatus,
   feedback: null,
   assignments: [],
   upcomingClasses: [],
   completedClasses: [],
+  recurringClasses: [],
 };
 
 function localeForLang(lang: string) {
@@ -355,6 +403,77 @@ function formatClassTimeFromInstant(date: Date, lang: string) {
   });
 }
 
+function formatBanEnd(value: string, lang: string) {
+  return new Date(value).toLocaleString(localeForLang(lang), {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+}
+
+function strikeCountClass(strikes: number) {
+  if (strikes === 0) return "text-emerald-700";
+  if (strikes === 1) return "text-amber-700";
+  if (strikes === 2) return "text-orange-700";
+  return "font-semibold text-red-950";
+}
+
+function toUIRecurringClass(
+  recurringClass: RecurringClassRow,
+  nextLessonId: string,
+  nextStartsAt: Date,
+  personUid: string,
+  personRole: "student" | "tutor",
+  personName: string,
+  skippedTimes: string[],
+  lang: string
+): UIRecurringClass {
+  const startsAt = new Date(recurringClass.time);
+  const endsAt = new Date(startsAt.getTime() + recurringClass.duration * 60000);
+  return {
+    id: recurringClass.lesson_id,
+    nextLessonId,
+    nextStartsAt,
+    personUid,
+    personRole,
+    personName,
+    day: startsAt.toLocaleDateString(localeForLang(lang), { weekday: "long" }),
+    time: `${formatClassTimeFromInstant(startsAt, lang)} - ${formatClassTimeFromInstant(endsAt, lang)}`,
+    duration: recurringClass.duration,
+    skippedDates: skippedTimes.map((time) =>
+      new Date(time).toLocaleDateString(localeForLang(lang), {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    ),
+  };
+}
+
+async function loadRecurringSkippedDates(recurringClasses: RecurringClassRow[]) {
+  const results = await Promise.all(
+    recurringClasses.map(async (recurringClass) => {
+      const { data, error } = await supabase.rpc("get_recurring_class_skipped_dates", {
+        p_recurring_lesson_id: recurringClass.lesson_id,
+      });
+      return {
+        lessonId: recurringClass.lesson_id,
+        skippedTimes: ((data ?? []) as Array<{ skipped_time: string }>).map((row) => row.skipped_time),
+        error,
+      };
+    })
+  );
+
+  return {
+    skippedDatesBySeries: new Map(results.map((result) => [result.lessonId, result.skippedTimes])),
+    error: results.find((result) => result.error)?.error ?? null,
+  };
+}
+
 function getClassMinutes(cls: ClassRow) {
   return cls.duration;
 }
@@ -386,7 +505,10 @@ function toUIClass(
   const studentProfile = studentProfiles.get(cls.student_uid);
   const student = studentProfile?.name ?? labels.unknownStudent(cls.student_uid.slice(0, 8));
   const studentNote = cls.student_wants_to_share?.trim() || labels.none;
-  const studentWechat = studentProfile?.wechat_id?.trim() || labels.none;
+  const studentWechat =
+    studentProfile?.student_wechat_id?.trim() ||
+    studentProfile?.parent_wechat_id?.trim() ||
+    labels.none;
 
   return {
     id: cls.lesson_id,
@@ -421,14 +543,20 @@ function toUIClass(
 function toStudentUIClass(
   cls: ClassRow,
   teacherNames: Map<string, string>,
-  tutorDetails: Map<string, { classLink: string; meetingPassword: string }>,
+  tutorDetails: Map<string, StudentTutorDetails>,
   evaluations: Map<string, EvaluationRow>,
   lang: string,
   labels: {
     tutor: string;
     chineseClass: string;
     myNote: (value: string) => string;
-    meetingPassword: (value: string) => string;
+    tutorWechatId: (value: string) => string;
+    parentWechatId: (value: string) => string;
+    tutorAndParentWechatIds: (tutor: string, parent: string) => string;
+    tutorEmail: (value: string) => string;
+    parentEmail: (value: string) => string;
+    tutorAndParentEmails: (tutor: string, parent: string) => string;
+    preferredCommunication: (value: string) => string;
     none: string;
   }
 ): UIClass {
@@ -438,7 +566,18 @@ function toStudentUIClass(
   const details = tutorDetails.get(cls.teacher_uid);
   const evaluation = evaluations.get(cls.lesson_id);
   const studentNote = cls.student_wants_to_share?.trim() || labels.none;
-  const meetingPassword = details?.meetingPassword?.trim() || labels.none;
+  const wechatLines = details?.tutorWechatId && details.parentWechatId
+    ? [labels.tutorAndParentWechatIds(details.tutorWechatId, details.parentWechatId)]
+    : [
+        ...(details?.tutorWechatId ? [labels.tutorWechatId(details.tutorWechatId)] : []),
+        ...(details?.parentWechatId ? [labels.parentWechatId(details.parentWechatId)] : []),
+      ];
+  const emailLines = details?.tutorEmail && details.parentEmail
+    ? [labels.tutorAndParentEmails(details.tutorEmail, details.parentEmail)]
+    : [
+        ...(details?.tutorEmail ? [labels.tutorEmail(details.tutorEmail)] : []),
+        ...(details?.parentEmail ? [labels.parentEmail(details.parentEmail)] : []),
+      ];
 
   return {
     id: cls.lesson_id,
@@ -453,7 +592,9 @@ function toStudentUIClass(
     displayPersonName: teacher,
     descriptionLines: [
       labels.myNote(studentNote),
-      labels.meetingPassword(meetingPassword),
+      ...wechatLines,
+      ...emailLines,
+      labels.preferredCommunication(details?.preferredCommunication || labels.none),
     ],
     date: formatClassDateFromInstant(startsAt, lang),
     time: `${formatClassTimeFromInstant(startsAt, lang)} - ${formatClassTimeFromInstant(endsAt, lang)}`,
@@ -543,21 +684,49 @@ function SettingsField({
   value,
   onChange,
   type = "text",
+  minLength,
+  maxLength,
+  inputMode,
+  pattern,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   type?: string;
+  minLength?: number;
+  maxLength?: number;
+  inputMode?: "email" | "numeric" | "search" | "tel" | "text" | "url";
+  pattern?: string;
 }) {
+  const { t } = useLanguage();
+  const [passwordVisible, setPasswordVisible] = useState(false);
+  const isPassword = type === "password";
+
   return (
     <label className="block">
       <span className="text-sm text-card-foreground">{label}</span>
-      <input
-        type={type}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="mt-2 h-11 w-full rounded-xl border border-border bg-background px-3.5 text-sm text-foreground outline-none transition focus:border-primary/40 focus:bg-card"
-      />
+      <span className="relative mt-2 block">
+        <input
+          type={isPassword && passwordVisible ? "text" : type}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          minLength={minLength}
+          maxLength={maxLength}
+          inputMode={inputMode}
+          pattern={pattern}
+          className={`h-11 w-full rounded-xl border border-border bg-background px-3.5 text-sm text-foreground outline-none transition focus:border-primary/40 focus:bg-card ${isPassword ? "pr-11" : ""}`}
+        />
+        {isPassword && (
+          <button
+            type="button"
+            onClick={() => setPasswordVisible((visible) => !visible)}
+            aria-label={t(passwordVisible ? "common.hidePassword" : "common.showPassword")}
+            className="absolute inset-y-0 right-0 flex w-11 items-center justify-center text-muted-foreground transition-colors hover:text-card-foreground"
+          >
+            {passwordVisible ? <EyeOff size={18} /> : <Eye size={18} />}
+          </button>
+        )}
+      </span>
     </label>
   );
 }
@@ -665,12 +834,9 @@ function AccountSettingsDialog({
     role: "student",
     name: fallbackUser.name,
     email: fallbackUser.email,
-    wechatId: "",
     country: "",
     grade: "",
-    englishLevel: "",
     school: "",
-    gradesToTutor: "",
     classLink: "",
     meetingPassword: "",
   });
@@ -679,6 +845,10 @@ function AccountSettingsDialog({
   const [message, setMessage] = useState("");
   const [messageKind, setMessageKind] = useState<"success" | "pending">("success");
   const [error, setError] = useState("");
+  const [deleteStep, setDeleteStep] = useState<"closed" | "code" | "confirm">("closed");
+  const [deleteCode, setDeleteCode] = useState("");
+  const [deleteEmail, setDeleteEmail] = useState("");
+  const [deleteBusy, setDeleteBusy] = useState<"sending" | "verifying" | "deleting" | null>(null);
 
   function updateProfile(key: keyof SettingsProfile, value: string) {
     setProfile((current) => ({ ...current, [key]: value }));
@@ -762,7 +932,7 @@ function AccountSettingsDialog({
 
       const { data: baseProfile, error: profileError } = await supabase
         .from("profiles")
-        .select("uid, role, name, email, wechat_id")
+        .select("uid, role, name, email")
         .eq("uid", uid)
         .single();
 
@@ -779,12 +949,9 @@ function AccountSettingsDialog({
         role: baseProfile.role,
         name: baseProfile.name,
         email: pendingEmailChange?.requestedEmail ?? baseProfile.email,
-        wechatId: baseProfile.wechat_id,
         country: "",
         grade: "",
-        englishLevel: "",
         school: "",
-        gradesToTutor: "",
         classLink: "",
         meetingPassword: "",
       };
@@ -792,7 +959,7 @@ function AccountSettingsDialog({
       if (baseProfile.role === "student") {
         const { data, error: studentError } = await supabase
           .from("student_profiles")
-          .select("country, grade, english_level")
+          .select("country, grade")
           .eq("uid", uid)
           .single();
 
@@ -801,14 +968,13 @@ function AccountSettingsDialog({
         } else {
           nextProfile.country = data.country;
           nextProfile.grade = data.grade;
-          nextProfile.englishLevel = data.english_level;
         }
       }
 
       if (baseProfile.role === "tutor") {
         const { data, error: tutorError } = await supabase
           .from("tutor_profiles")
-          .select("school, grade, grades_to_tutor, class_link, meeting_password")
+          .select("school, grade, class_link, meeting_password")
           .eq("uid", uid)
           .single();
 
@@ -817,7 +983,6 @@ function AccountSettingsDialog({
         } else {
           nextProfile.school = data.school;
           nextProfile.grade = data.grade;
-          nextProfile.gradesToTutor = serializeGradesToTutor(parseGradesToTutor(data.grades_to_tutor));
           nextProfile.classLink = data.class_link;
           nextProfile.meetingPassword = data.meeting_password;
         }
@@ -843,10 +1008,15 @@ function AccountSettingsDialog({
     setError("");
 
     const normalizedClassLink = profile.role === "tutor"
-      ? safeExternalUrl(profile.classLink)
+      ? normalizeVoovMeetingUrl(profile.classLink)
       : null;
     if (profile.role === "tutor" && !normalizedClassLink) {
-      setError(t("media.urlInvalid"));
+      setError(t("auth.voovLinkRequired"));
+      setSaving(false);
+      return;
+    }
+    if (profile.role === "tutor" && !isValidMeetingPassword(profile.meetingPassword)) {
+      setError(t("auth.meetingPasswordInvalid"));
       setSaving(false);
       return;
     }
@@ -906,7 +1076,6 @@ function AccountSettingsDialog({
       .update({
         name: profile.name,
         email: confirmedEmail,
-        wechat_id: profile.wechatId,
       })
       .eq("uid", profile.uid);
 
@@ -922,7 +1091,6 @@ function AccountSettingsDialog({
         .update({
           country: profile.country,
           grade: profile.grade,
-          english_level: profile.englishLevel,
         })
         .eq("uid", profile.uid);
 
@@ -939,7 +1107,6 @@ function AccountSettingsDialog({
         .update({
           school: profile.school,
           grade: profile.grade,
-          grades_to_tutor: profile.gradesToTutor,
           class_link: normalizedClassLink,
           meeting_password: profile.meetingPassword,
         })
@@ -1011,16 +1178,77 @@ function AccountSettingsDialog({
     setMessage(t("settings.resetSent"));
   }
 
-  async function handleDeleteAccount() {
+  function closeDeleteDialog() {
+    if (deleteBusy === "deleting") return;
+    setDeleteStep("closed");
+    setDeleteCode("");
+    setDeleteEmail("");
+    setError("");
+  }
+
+  async function handleStartDeleteAccount() {
     setMessage("");
     setError("");
-    const confirmed = window.confirm(t("settings.deleteConfirm"));
-    if (!confirmed) return;
+    setDeleteBusy("sending");
 
-    const { error: rpcError } = await supabase.rpc("delete_current_user");
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    if (authError || !authData.user?.email) {
+      console.error("Failed to load the current user before reauthentication", authError);
+      setError(authError?.message ?? t("settings.noSignedInUser"));
+      setDeleteBusy(null);
+      return;
+    }
+
+    const { error: reauthenticationError } = await supabase.auth.reauthenticate();
+    if (reauthenticationError) {
+      console.error("Failed to send account deletion reauthentication code", reauthenticationError);
+      setError(reauthenticationError.message);
+      setDeleteBusy(null);
+      return;
+    }
+
+    setDeleteEmail(authData.user.email);
+    setDeleteCode("");
+    setDeleteStep("code");
+    setDeleteBusy(null);
+  }
+
+  async function handleVerifyDeleteCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+
+    if (!/^\d{8}$/.test(deleteCode)) {
+      setError(t("settings.deleteCodeInvalid"));
+      return;
+    }
+
+    setDeleteBusy("verifying");
+    const { data, error: verifyError } = await supabase.rpc("verify_delete_account_code", {
+      p_nonce: deleteCode,
+    });
+
+    if (verifyError || data !== true) {
+      console.error("verify_delete_account_code failed", verifyError);
+      setError(verifyError?.message ?? t("settings.deleteCodeInvalid"));
+      setDeleteBusy(null);
+      return;
+    }
+
+    setDeleteStep("confirm");
+    setDeleteBusy(null);
+  }
+
+  async function handleDeleteAccount() {
+    setError("");
+    setDeleteBusy("deleting");
+
+    const { error: rpcError } = await supabase.rpc("delete_current_user", {
+      p_nonce: deleteCode,
+    });
     if (rpcError) {
       console.error("delete_current_user failed", rpcError);
       setError(t("settings.deleteRpcRequired", { message: rpcError.message }));
+      setDeleteBusy(null);
       return;
     }
 
@@ -1075,13 +1303,10 @@ function AccountSettingsDialog({
                 <div className="grid gap-5 md:grid-cols-2">
                   <SettingsField label={t("auth.name")} value={profile.name} onChange={(value) => updateProfile("name", value)} />
                   <SettingsField label={t("auth.email")} type="email" value={profile.email} onChange={(value) => updateProfile("email", value)} />
-                  <SettingsField label={t("auth.wechatId")} value={profile.wechatId} onChange={(value) => updateProfile("wechatId", value)} />
-
                   {profile.role === "student" && (
                     <>
                       <SettingsCountrySelect label={t("auth.country")} value={profile.country} onChange={(value) => updateProfile("country", value)} />
                       <SettingsSelect label={t("auth.grade")} value={profile.grade} onChange={(value) => updateProfile("grade", value)} options={gradeOptions} />
-                      <SettingsSelect label={t("auth.englishLevel")} value={profile.englishLevel} onChange={(value) => updateProfile("englishLevel", value)} options={englishLevels} />
                     </>
                   )}
 
@@ -1089,14 +1314,8 @@ function AccountSettingsDialog({
                     <>
                       <SettingsField label={t("auth.school")} value={profile.school} onChange={(value) => updateProfile("school", value)} />
                       <SettingsSelect label={t("auth.grade")} value={profile.grade} onChange={(value) => updateProfile("grade", value)} options={gradeOptions} />
-                      <GradesToTutorMultiSelect
-                        label={t("auth.studentGradeToTutor")}
-                        placeholder={t("auth.selectTargetGrade")}
-                        value={profile.gradesToTutor}
-                        onChange={(value) => updateProfile("gradesToTutor", value)}
-                      />
-                      <SettingsField label={t("auth.classLink")} value={profile.classLink} onChange={(value) => updateProfile("classLink", value)} />
-                      <SettingsField label={t("auth.classPassword")} value={profile.meetingPassword} onChange={(value) => updateProfile("meetingPassword", value)} />
+                      <SettingsField label={t("auth.classLink")} type="url" value={profile.classLink} onChange={(value) => updateProfile("classLink", value)} />
+                      <SettingsField label={t("auth.classPassword")} type="password" minLength={4} maxLength={6} inputMode="numeric" pattern="[0-9]{4,6}" value={profile.meetingPassword} onChange={(value) => updateProfile("meetingPassword", value.replace(/\D/g, "").slice(0, 6))} />
                     </>
                   )}
                 </div>
@@ -1119,10 +1338,11 @@ function AccountSettingsDialog({
                     <p className="text-lg text-card-foreground">{t("settings.deleteAccount")}</p>
                     <button
                       type="button"
-                      onClick={handleDeleteAccount}
-                      className="rounded-full border border-destructive px-7 py-3 text-sm text-destructive transition-colors hover:bg-destructive/10"
+                      onClick={handleStartDeleteAccount}
+                      disabled={deleteBusy === "sending"}
+                      className="rounded-full border border-destructive px-7 py-3 text-sm text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {t("settings.delete")}
+                      {deleteBusy === "sending" ? t("settings.sendingDeleteCode") : t("settings.delete")}
                     </button>
                   </div>
                 </div>
@@ -1150,6 +1370,89 @@ function AccountSettingsDialog({
               </div>
             </div>
           </section>
+
+          <Dialog.Root open={deleteStep !== "closed"} onOpenChange={(nextOpen) => !nextOpen && closeDeleteDialog()}>
+            <Dialog.Portal>
+              <Dialog.Overlay className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm" />
+              <Dialog.Content className="fixed left-1/2 top-1/2 z-[60] max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-border bg-card p-5 shadow-2xl sm:p-6">
+                {deleteStep === "code" ? (
+                  <form onSubmit={handleVerifyDeleteCode}>
+                    <Dialog.Title className="text-xl text-card-foreground">
+                      {t("settings.deleteCodeTitle")}
+                    </Dialog.Title>
+                    <Dialog.Description className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                      {t("settings.deleteCodeHelp", { email: deleteEmail })}
+                    </Dialog.Description>
+
+                    <label className="mt-5 block">
+                      <span className="text-sm font-medium text-card-foreground">
+                        {t("settings.deleteCodeLabel")}
+                      </span>
+                      <input
+                        autoFocus
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        maxLength={8}
+                        value={deleteCode}
+                        onChange={(event) => setDeleteCode(event.target.value.replace(/\D/g, "").slice(0, 8))}
+                        placeholder={t("settings.deleteCodePlaceholder")}
+                        className="mt-2 h-11 w-full rounded-xl border border-border bg-background px-3.5 text-sm tracking-[0.3em] text-foreground outline-none transition placeholder:tracking-normal placeholder:text-muted-foreground/70 focus:border-primary/40"
+                      />
+                    </label>
+
+                    {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+
+                    <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+                      <button
+                        type="button"
+                        onClick={closeDeleteDialog}
+                        className="rounded-xl border border-border px-5 py-2.5 text-sm text-card-foreground transition-colors hover:bg-muted"
+                      >
+                        {t("common.cancel")}
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={deleteBusy !== null}
+                        className="rounded-xl bg-primary px-5 py-2.5 text-sm text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {deleteBusy === "verifying" ? t("settings.verifyingDeleteCode") : t("settings.verifyDeleteCode")}
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <>
+                    <Dialog.Title className="text-xl text-card-foreground">
+                      {t("settings.deleteConfirmationTitle")}
+                    </Dialog.Title>
+                    <Dialog.Description className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                      {t("settings.deleteConfirm")}
+                    </Dialog.Description>
+
+                    {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+
+                    <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+                      <button
+                        type="button"
+                        onClick={closeDeleteDialog}
+                        disabled={deleteBusy === "deleting"}
+                        className="rounded-xl border border-border px-5 py-2.5 text-sm text-card-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {t("common.cancel")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleDeleteAccount}
+                        disabled={deleteBusy === "deleting"}
+                        className="rounded-xl bg-destructive px-5 py-2.5 text-sm text-destructive-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {deleteBusy === "deleting" ? t("settings.deletingAccount") : t("settings.deleteAccount")}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </Dialog.Content>
+            </Dialog.Portal>
+          </Dialog.Root>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
@@ -1227,7 +1530,7 @@ function FeedbackDialog({
     <Dialog.Root open={open} onOpenChange={(v) => !v && onClose()}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-card p-5 shadow-2xl sm:p-6">
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-border bg-card p-5 shadow-2xl sm:p-6">
           <div className="flex items-center justify-between mb-5">
             <Dialog.Title className="text-card-foreground">{t("feedback.teacherTitle")}</Dialog.Title>
             <button
@@ -1288,11 +1591,20 @@ function PersonProfileDialog({
       setError("");
       setDetails([]);
 
-      const { data: baseProfile, error: baseError } = await supabase
-        .from("profiles")
-        .select("name, email, wechat_id")
-        .eq("uid", person.uid)
-        .maybeSingle();
+      const profileTable = person.role === "student" ? "student_profiles" : "tutor_profiles";
+      const [baseProfileResult, roleProfileResult] = await Promise.all([
+        supabase
+          .from("profiles")
+          .select("name, student_wechat_id, parent_wechat_id, student_email, parent_email, communication_recipient, preferred_communication")
+          .eq("uid", person.uid)
+          .maybeSingle(),
+        supabase
+          .from(profileTable)
+          .select("*")
+          .eq("uid", person.uid)
+          .maybeSingle(),
+      ]);
+      const { data: baseProfile, error: baseError } = baseProfileResult;
 
       if (baseError || !baseProfile) {
         if (!cancelled) {
@@ -1302,12 +1614,7 @@ function PersonProfileDialog({
         return;
       }
 
-      const profileTable = person.role === "student" ? "student_profiles" : "tutor_profiles";
-      const { data: roleProfile, error: roleError } = await supabase
-        .from(profileTable)
-        .select("*")
-        .eq("uid", person.uid)
-        .maybeSingle();
+      const { data: roleProfile, error: roleError } = roleProfileResult;
 
       if (roleError) {
         if (!cancelled) {
@@ -1320,44 +1627,57 @@ function PersonProfileDialog({
       const hiddenFields = new Set(
         person.role === "student"
           ? ["uid", "referrer", "trial_teacher"]
-          : [
-              "uid",
-              "how_found_out",
-              "sat_700",
-              "sat_730",
-              "sat_800",
-              "sat_830",
-              "sat_900",
-              "sat_930",
-              "sat_1000",
-              "sat_1030",
-              "sat_1100",
-              "sat_1130",
-              "sun_700",
-              "sun_730",
-              "sun_800",
-              "sun_830",
-              "sun_900",
-              "sun_930",
-              "sun_1000",
-              "sun_1030",
-              "sun_1100",
-              "sun_1130",
-            ]
+          : ["uid", "how_found_out"]
       );
 
       const roleDetails = Object.entries(roleProfile ?? {})
         .filter(([key, value]) => !hiddenFields.has(key) && value !== null && value !== "")
         .map(([key, value]) => ({
-          label: labelFromColumn(key),
+          label: key === "introduction"
+            ? t(person.role === "student" ? "auth.studentIntroduction" : "auth.tutorIntroduction")
+            : labelFromColumn(key),
           value: key === "country" ? countryLabelForValue(String(value), lang) : String(value),
         }));
 
       if (!cancelled) {
         setDetails([
           { label: t("common.name"), value: baseProfile.name },
-          { label: t("auth.email"), value: baseProfile.email },
-          { label: t("auth.wechatId"), value: baseProfile.wechat_id },
+          ...(baseProfile.communication_recipient
+            ? [{
+                label: t("auth.communicationRecipient"),
+                value: baseProfile.communication_recipient === "both"
+                  ? t(person.role === "tutor"
+                    ? "auth.communicationRecipient.tutorAndParent"
+                    : "auth.communicationRecipient.studentAndParent")
+                  : baseProfile.communication_recipient === "student" && person.role === "tutor"
+                    ? t("auth.communicationRecipient.tutor")
+                    : t(`auth.communicationRecipient.${baseProfile.communication_recipient}` as "auth.communicationRecipient.student" | "auth.communicationRecipient.parent"),
+              }]
+            : []),
+          ...(baseProfile.student_wechat_id
+            ? [{
+                label: t(person.role === "tutor" ? "auth.tutorWechatId" : "auth.studentWechatId"),
+                value: baseProfile.student_wechat_id,
+              }]
+            : []),
+          ...(baseProfile.parent_wechat_id
+            ? [{ label: t("auth.parentWechatId"), value: baseProfile.parent_wechat_id }]
+            : []),
+          ...(baseProfile.student_email
+            ? [{
+                label: t(person.role === "tutor" ? "auth.tutorCommunicationEmail" : "auth.studentCommunicationEmail"),
+                value: baseProfile.student_email,
+              }]
+            : []),
+          ...(baseProfile.parent_email
+            ? [{ label: t("auth.parentCommunicationEmail"), value: baseProfile.parent_email }]
+            : []),
+          ...(baseProfile.preferred_communication
+            ? [{
+                label: t("auth.preferredCommunication"),
+                value: t(`auth.preferredCommunication.${baseProfile.preferred_communication}` as "auth.preferredCommunication.wechat" | "auth.preferredCommunication.email"),
+              }]
+            : []),
           ...roleDetails,
         ]);
         setLoading(false);
@@ -1397,13 +1717,26 @@ function PersonProfileDialog({
           ) : error ? (
             <p className="rounded-xl border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>
           ) : (
-            <div className="divide-y divide-border border-y border-border">
-              {details.map((detail) => (
-                <div key={detail.label} className="grid gap-1 py-3 sm:grid-cols-[9rem_1fr] sm:gap-4">
-                  <p className="text-xs text-muted-foreground">{detail.label}</p>
-                  <p className="break-words text-sm text-card-foreground">{detail.value}</p>
-                </div>
-              ))}
+            <div>
+              <div className="divide-y divide-border border-y border-border">
+                {details.map((detail) => (
+                  <div key={detail.label} className="grid gap-1 py-3 sm:grid-cols-[9rem_1fr] sm:gap-4">
+                    <p className="text-xs text-muted-foreground">{detail.label}</p>
+                    <p className="whitespace-pre-wrap break-words text-sm text-card-foreground">{detail.value}</p>
+                  </div>
+                ))}
+              </div>
+              {person?.role === "student" && (
+                <p className="mt-4 text-sm text-muted-foreground">
+                  {t("speakingSamples.profileLinkLabel")}:{" "}
+                  <Link
+                    href={`/speaking-samples/${person.uid}`}
+                    className="break-all text-primary hover:underline"
+                  >
+                    peerbridges.org/speaking-samples/{person.uid}
+                  </Link>
+                </p>
+              )}
             </div>
           )}
         </Dialog.Content>
@@ -1444,7 +1777,7 @@ function ClassCard({
   feedbackPendingLabel?: string;
   useEvaluationPage?: boolean;
   attendee?: "student" | "teacher";
-  onCancelClass?: (cls: { id: string | number; recurringLessonId?: string | null }) => void;
+  onCancelClass?: (cls: CancelClassTarget) => void;
 }) {
   const { t } = useLanguage();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -1494,27 +1827,28 @@ function ClassCard({
             <ChevronRight size={13} className="text-muted-foreground" />
           </div>
         </button>
+        <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <CalendarDays size={14} />
+            {cls.date}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <Clock size={14} />
+            {cls.time}
+          </span>
+          {!completed && cls.meetingPassword && (
+            <span className="flex items-center gap-1.5">
+              <KeyRound size={14} />
+              {t("dashboard.meetingPassword", { password: cls.meetingPassword })}
+            </span>
+          )}
+        </div>
         {cls.descriptionLines && cls.descriptionLines.length > 0 && (
           <div className="grid gap-1 text-xs leading-relaxed text-muted-foreground">
             {cls.descriptionLines.map((line) => (
               <p key={line}>{line}</p>
             ))}
           </div>
-        )}
-        <div className="flex items-center gap-4 text-xs text-muted-foreground">
-          <span className="flex items-center gap-1">
-            <CalendarDays size={12} />
-            {cls.date}
-          </span>
-          <span className="flex items-center gap-1">
-            <Clock size={12} />
-            {cls.time}
-          </span>
-        </div>
-        {cls.meetingPassword && (
-          <p className="text-xs text-muted-foreground">
-            {t("dashboard.meetingPassword", { password: cls.meetingPassword })}
-          </p>
         )}
         {completed && (cls.evaluationCompleted || feedbackPendingLabel !== t("dashboard.teacherFeedbackPending")) && (
           useEvaluationPage ? (
@@ -1550,7 +1884,7 @@ function ClassCard({
             >
               {t("dashboard.joinSession")}
             </button>
-            {attendee === "student" && onCancelClass && (
+            {onCancelClass && (
               <button
                 type="button"
                 onClick={() => onCancelClass(cls)}
@@ -1580,10 +1914,12 @@ function TopNav({
   user,
   onMenuClick,
   onUserUpdated,
+  onRulesClick,
 }: {
   user: typeof STUDENT;
   onMenuClick: () => void;
   onUserUpdated: (user: StoredUser) => void;
+  onRulesClick?: () => void;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -1636,6 +1972,17 @@ function TopNav({
       </div>
 
       <div className="flex-1" />
+
+      {onRulesClick && (
+        <button
+          type="button"
+          onClick={onRulesClick}
+          className="flex shrink-0 items-center gap-2 rounded-xl border border-border px-3 py-2 text-sm text-card-foreground transition-colors hover:bg-accent"
+        >
+          <CircleHelp size={16} className="text-muted-foreground" />
+          <span className="hidden sm:inline">{t("rules.button")}</span>
+        </button>
+      )}
 
       <LanguageSelect />
 
@@ -1692,10 +2039,12 @@ function Sidebar({
   active,
   dashboardHref,
   scheduleHref,
+  scheduleLabel,
   recordHref,
   trainingHref,
   volunteerAwardHref,
   studentMaterialsHref,
+  speakingSamplesHref,
   manageMediaHref,
   communicationsHref,
   open,
@@ -1704,10 +2053,12 @@ function Sidebar({
   active: string;
   dashboardHref: string;
   scheduleHref?: string | null;
+  scheduleLabel: string;
   recordHref?: string;
   trainingHref?: string;
   volunteerAwardHref?: string;
   studentMaterialsHref?: string;
+  speakingSamplesHref?: string;
   manageMediaHref?: string;
   communicationsHref?: string;
   open: boolean;
@@ -1718,7 +2069,7 @@ function Sidebar({
   const items = [
     { id: "dashboard", href: dashboardHref, icon: LayoutDashboard, label: t("common.dashboard") },
     ...(scheduleHref
-      ? [{ id: "schedule", href: scheduleHref, icon: CalendarDays, label: t("common.schedule") }]
+      ? [{ id: "schedule", href: scheduleHref, icon: CalendarDays, label: scheduleLabel }]
       : []),
     ...(recordHref
       ? [{ id: "record", href: recordHref, icon: FileText, label: t("common.volunteerRecord") }]
@@ -1731,6 +2082,9 @@ function Sidebar({
       : []),
     ...(studentMaterialsHref
       ? [{ id: "studentMaterials", href: studentMaterialsHref, icon: FileText, label: t("common.studentMaterials") }]
+      : []),
+    ...(speakingSamplesHref
+      ? [{ id: "speakingSamples", href: speakingSamplesHref, icon: Mic2, label: t("common.speakingSamples") }]
       : []),
     ...(manageMediaHref
       ? [{ id: "manageMedia", href: manageMediaHref, icon: GraduationCap, label: t("common.manageMedia") }]
@@ -2085,14 +2439,14 @@ function PendingEvaluationsCard({
                 <BlankAvatar size={34} />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm text-card-foreground truncate">{evaluation.name}</p>
-                  <p className="text-xs text-muted-foreground">{evaluation.student} · {evaluation.date} · {evaluation.time}</p>
+                  <p className="truncate text-xs text-muted-foreground">{evaluation.student} · {evaluation.date} · {evaluation.time}</p>
                 </div>
               </div>
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <p className="text-xs text-muted-foreground">{t("dashboard.readyToComplete")}</p>
                 <Link
                   href={`/evaluations/${evaluation.id}`}
-                  className="shrink-0 flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90 transition-colors"
+                  className="flex w-full shrink-0 items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs text-primary-foreground transition-colors hover:bg-primary/90 sm:w-auto"
                 >
                   <FileText size={12} />
                   {t("dashboard.complete")}
@@ -2130,7 +2484,7 @@ function UpcomingClassHero({
   };
   lang: string;
   attendee: "student" | "teacher";
-  onCancelClass?: (cls: { id: string | number; recurringLessonId?: string | null }) => void;
+  onCancelClass?: (cls: CancelClassTarget) => void;
 }) {
   const { t } = useLanguage();
   const [profilePerson, setProfilePerson] = useState<{ uid: string; role: "student" | "tutor"; name: string } | null>(null);
@@ -2156,10 +2510,13 @@ function UpcomingClassHero({
           <div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
             <span className="flex items-center gap-1.5"><CalendarDays size={14} />{cls.date}</span>
             <span className="flex items-center gap-1.5"><Clock size={14} />{cls.time}</span>
+            {cls.meetingPassword && (
+              <span className="flex items-center gap-1.5">
+                <KeyRound size={14} />
+                {t("dashboard.meetingPassword", { password: cls.meetingPassword })}
+              </span>
+            )}
           </div>
-          {cls.meetingPassword && (
-            <p className="mt-2 text-xs text-muted-foreground">{t("dashboard.meetingPassword", { password: cls.meetingPassword })}</p>
-          )}
         </div>
         {cls.descriptionLines && cls.descriptionLines.length > 0 && (
           <div className="grid gap-1 text-xs leading-relaxed text-muted-foreground">
@@ -2189,7 +2546,7 @@ function UpcomingClassHero({
           </div>
         </button>
       </div>
-      <div className="grid w-full shrink-0 gap-2 sm:w-auto">
+      <div className="grid w-full shrink-0 gap-2 sm:w-48">
         <button
           type="button"
           onClick={() => void handleJoinClass(cls, attendee)}
@@ -2198,7 +2555,7 @@ function UpcomingClassHero({
         >
           {t("dashboard.joinSession")}
         </button>
-        {attendee === "student" && onCancelClass && (
+        {onCancelClass && (
           <button
             type="button"
             onClick={() => onCancelClass(cls)}
@@ -2262,10 +2619,12 @@ function ClassesCard({
   feedbackPendingLabel,
   upcomingClasses = [],
   completedClasses = [],
+  recurringClasses = [],
   loading = false,
   useEvaluationPage = false,
   attendee = "student",
   onCancelClass,
+  onCancelRecurring,
 }: {
   lang: string;
   feedbackLabel?: string;
@@ -2276,6 +2635,7 @@ function ClassesCard({
     teacher: string;
     date: string;
     time: string;
+    startsAt: Date;
     recurringLessonId?: string | null;
     evaluationCompleted?: boolean;
     feedback?: typeof LAST_FEEDBACK;
@@ -2289,14 +2649,20 @@ function ClassesCard({
     evaluationCompleted?: boolean;
     feedback?: typeof LAST_FEEDBACK;
   }>;
+  recurringClasses?: UIRecurringClass[];
   loading?: boolean;
   useEvaluationPage?: boolean;
   attendee?: "student" | "teacher";
-  onCancelClass?: (cls: { id: string | number; recurringLessonId?: string | null }) => void;
+  onCancelClass?: (cls: CancelClassTarget) => void;
+  onCancelRecurring?: (recurringClass: UIRecurringClass) => Promise<void>;
 }) {
   const { t } = useLanguage();
   const [upcomingPage, setUpcomingPage] = useState(1);
   const [completedPage, setCompletedPage] = useState(1);
+  const [recurringCancelTarget, setRecurringCancelTarget] = useState<UIRecurringClass | null>(null);
+  const [recurringCancelError, setRecurringCancelError] = useState("");
+  const [cancellingRecurring, setCancellingRecurring] = useState(false);
+  const [profilePerson, setProfilePerson] = useState<{ uid: string; role: "student" | "tutor"; name: string } | null>(null);
   const resolvedFeedbackLabel = feedbackLabel ?? t("dashboard.viewTeacherFeedback");
   const resolvedFeedbackPendingLabel = feedbackPendingLabel ?? t("dashboard.teacherFeedbackPending");
   const upcomingTotalPages = Math.max(1, Math.ceil(upcomingClasses.length / upcomingClassesPerPage));
@@ -2314,6 +2680,21 @@ function ClassesCard({
     setCompletedPage(1);
   }, [completedClasses.length]);
 
+  async function cancelRecurringClass() {
+    if (!recurringCancelTarget || !onCancelRecurring) return;
+    setCancellingRecurring(true);
+    setRecurringCancelError("");
+    try {
+      await onCancelRecurring(recurringCancelTarget);
+      setRecurringCancelTarget(null);
+    } catch (error) {
+      console.error("Failed to cancel recurring class", error);
+      setRecurringCancelError(error instanceof Error ? error.message : t("dashboard.cancelClassError"));
+    } finally {
+      setCancellingRecurring(false);
+    }
+  }
+
   return (
     <div className="bg-card border border-border rounded-2xl p-5 flex flex-col gap-4">
       <h3 className="text-card-foreground">{t("dashboard.classes")}</h3>
@@ -2322,6 +2703,7 @@ function ClassesCard({
           {[
             { value: "scheduled", label: t("dashboard.upcoming") },
             { value: "completed", label: t("dashboard.completed") },
+            { value: "recurring", label: t("dashboard.recurring") },
           ].map(({ value, label }) => (
             <Tabs.Trigger
               key={value}
@@ -2380,7 +2762,112 @@ function ClassesCard({
             </>
           )}
         </Tabs.Content>
+        <Tabs.Content value="recurring">
+          {loading ? (
+            <div className="flex flex-col items-center justify-center gap-2 py-12 text-muted-foreground">
+              <CalendarDays size={32} className="opacity-30" />
+              <p className="text-sm">{t("dashboard.loadingClasses")}</p>
+            </div>
+          ) : recurringClasses.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-2 py-12 text-muted-foreground">
+              <CalendarDays size={32} className="opacity-30" />
+              <p className="text-sm">{t("dashboard.noRecurringClasses")}</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {recurringClasses.map((recurringClass) => (
+                <div key={recurringClass.id} className="rounded-xl border border-border bg-background p-4">
+                  <button
+                    type="button"
+                    onClick={() => setProfilePerson({
+                      uid: recurringClass.personUid,
+                      role: recurringClass.personRole,
+                      name: recurringClass.personName,
+                    })}
+                    className="flex w-fit items-center gap-2.5 rounded-lg text-left transition-colors hover:bg-accent"
+                  >
+                    <BlankAvatar size={32} />
+                    <div>
+                      <p className="flex items-center gap-1.5 text-sm font-medium text-card-foreground">
+                        {recurringClass.personName}
+                        <ChevronRight size={13} className="text-muted-foreground" />
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {attendee === "teacher" ? t("common.student") : t("common.tutor")}
+                      </p>
+                    </div>
+                  </button>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    {t("dashboard.recurringSchedule", { day: recurringClass.day, time: recurringClass.time })}
+                  </p>
+                  {recurringClass.skippedDates.length > 0 && (
+                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                      {t("dashboard.recurringSkippedDates", {
+                        dates: recurringClass.skippedDates.join(", "),
+                      })}
+                    </p>
+                  )}
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {recurringClass.duration} {t("common.minutes")}
+                  </p>
+                  {onCancelRecurring && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRecurringCancelError("");
+                        setRecurringCancelTarget(recurringClass);
+                      }}
+                      className="mt-4 w-full rounded-xl border border-destructive/30 px-4 py-2 text-sm text-destructive transition-colors hover:bg-destructive/10"
+                    >
+                      {t("dashboard.cancelRecurringClass")}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </Tabs.Content>
       </Tabs.Root>
+
+      <Dialog.Root open={recurringCancelTarget !== null} onOpenChange={(open) => !open && setRecurringCancelTarget(null)}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-border bg-card p-5 shadow-xl">
+            <Dialog.Title className="text-card-foreground">{t("dashboard.cancelRecurringClassTitle")}</Dialog.Title>
+            <Dialog.Description className="mt-2 text-sm leading-relaxed text-muted-foreground">
+              {t("dashboard.cancelRecurringClassHelp")}
+            </Dialog.Description>
+            {recurringCancelTarget && isLateCancellation(
+              recurringCancelTarget.nextStartsAt,
+              attendee === "teacher" ? "tutor" : "student"
+            ) && (
+              <p className="mt-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                {t("strikes.lateCancellationWarning")}
+              </p>
+            )}
+            {recurringCancelError && <p className="mt-4 text-sm text-destructive">{recurringCancelError}</p>}
+            <div className="mt-5 flex gap-2 sm:justify-end">
+              <button
+                type="button"
+                onClick={() => setRecurringCancelTarget(null)}
+                disabled={cancellingRecurring}
+                className="rounded-xl border border-border px-4 py-2 text-sm text-card-foreground hover:bg-accent disabled:opacity-50"
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                type="button"
+                onClick={() => void cancelRecurringClass()}
+                disabled={cancellingRecurring}
+                className="rounded-xl bg-destructive px-4 py-2 text-sm text-destructive-foreground hover:opacity-90 disabled:opacity-50"
+              >
+                {t("common.confirm")}
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+      <PersonProfileDialog person={profilePerson} onClose={() => setProfilePerson(null)} />
     </div>
   );
 }
@@ -2391,11 +2878,18 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
   const { t } = useLanguage();
   const [studentData, setStudentData] = useState<StudentDashboardData>(emptyStudentDashboardData);
   const [storedUser, setStoredUser] = useState<StoredUser | null>(null);
-  const [cancelTarget, setCancelTarget] = useState<{ id: string | number; recurringLessonId?: string | null } | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<CancelClassTarget | null>(null);
   const [cancelError, setCancelError] = useState("");
   const [cancelMessage, setCancelMessage] = useState("");
   const [cancelling, setCancelling] = useState(false);
   const studentName = storedUser?.name || t("common.student");
+
+  async function updateStudentStrikeStatus() {
+    const { status, error } = await refreshStrikeStatus();
+    if (!error) {
+      setStudentData((current) => ({ ...current, strikeStatus: status }));
+    }
+  }
 
   async function cancelOneClass(target: { id: string | number }) {
     const { error } = await supabase.rpc("secure_cancel_class", {
@@ -2404,6 +2898,8 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
     });
 
     if (error) throw error;
+    void dispatchReminderEmails();
+    await updateStudentStrikeStatus();
 
     setStudentData((current) => ({
       ...current,
@@ -2440,10 +2936,13 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
       });
 
       if (cancelSeriesError) throw cancelSeriesError;
+      void dispatchReminderEmails();
+      await updateStudentStrikeStatus();
 
       setStudentData((current) => ({
         ...current,
         upcomingClasses: current.upcomingClasses.filter((cls) => cls.recurringLessonId !== cancelTarget.recurringLessonId),
+        recurringClasses: current.recurringClasses.filter((cls) => cls.id !== cancelTarget.recurringLessonId),
       }));
       setCancelMessage(t("dashboard.classCancelled"));
       setCancelTarget(null);
@@ -2453,6 +2952,23 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
     } finally {
       setCancelling(false);
     }
+  }
+
+  async function cancelRecurringFromCard(recurringClass: UIRecurringClass) {
+    const { error } = await supabase.rpc("secure_cancel_class", {
+      p_lesson_id: recurringClass.nextLessonId,
+      p_series: true,
+    });
+    if (error) throw error;
+    void dispatchReminderEmails();
+    await updateStudentStrikeStatus();
+
+    setStudentData((current) => ({
+      ...current,
+      recurringClasses: current.recurringClasses.filter((cls) => cls.id !== recurringClass.id),
+      upcomingClasses: current.upcomingClasses.filter((cls) => cls.recurringLessonId !== recurringClass.id),
+    }));
+    setCancelMessage(t("dashboard.classCancelled"));
   }
 
   useEffect(() => {
@@ -2484,101 +3000,163 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
         return;
       }
 
-      const { data: classRows, error: classesError } = await supabase
-        .from("classes")
-        .select("lesson_id, student_uid, teacher_uid, time, duration, evaluation_completed, student_attended, teacher_attended, student_wants_to_share, recurring_lesson_id, status")
-        .eq("student_uid", studentUid)
-        .or("status.is.null,status.neq.cancelled")
-        .order("time", { ascending: true });
-
-      if (classesError) {
+      const [
+        strikeStatusResult,
+        classesResult,
+        recurringResult,
+        assignmentsResult,
+      ] = await Promise.all([
+        refreshStrikeStatus(),
+        supabase
+          .from("classes")
+          .select("lesson_id, student_uid, teacher_uid, time, duration, evaluation_completed, student_attended, teacher_attended, student_wants_to_share, recurring_lesson_id, status")
+          .eq("student_uid", studentUid)
+          .or("status.is.null,status.neq.cancelled")
+          .order("time", { ascending: true }),
+        supabase
+          .from("recurring_classes")
+          .select("lesson_id, student_uid, teacher_uid, time, duration")
+          .eq("student_uid", studentUid)
+          .order("time", { ascending: true }),
+        supabase
+          .from("assignments")
+          .select("assignment_id, lesson_id, student_uid, teacher_uid, name, description, due_date, complete")
+          .eq("student_uid", studentUid)
+          .eq("complete", false)
+          .order("due_date", { ascending: true }),
+      ]);
+      const { status: strikeStatus, error: strikeStatusError } = strikeStatusResult;
+      if (strikeStatusError) {
         if (!cancelled) {
-          setStudentData({ ...emptyStudentDashboardData, loading: false, error: classesError.message });
+          setStudentData({
+            ...emptyStudentDashboardData,
+            loading: false,
+            error: strikeStatusError.message,
+          });
         }
         return;
       }
 
-      const classes = (classRows ?? []) as ClassRow[];
+      if (classesResult.error) {
+        if (!cancelled) {
+          setStudentData({ ...emptyStudentDashboardData, loading: false, error: classesResult.error.message });
+        }
+        return;
+      }
+
+      if (recurringResult.error) {
+        if (!cancelled) {
+          setStudentData({ ...emptyStudentDashboardData, loading: false, error: recurringResult.error.message });
+        }
+        return;
+      }
+
+      if (assignmentsResult.error) {
+        if (!cancelled) {
+          setStudentData({ ...emptyStudentDashboardData, loading: false, error: assignmentsResult.error.message });
+        }
+        return;
+      }
+
+      const classes = (classesResult.data ?? []) as ClassRow[];
+      const recurringClassRows = (recurringResult.data ?? []) as RecurringClassRow[];
+      const assignmentData = (assignmentsResult.data ?? []) as AssignmentRow[];
+      const { skippedDatesBySeries, error: skippedDatesError } =
+        await loadRecurringSkippedDates(recurringClassRows);
+      if (skippedDatesError) {
+        if (!cancelled) {
+          setStudentData({ ...emptyStudentDashboardData, loading: false, error: skippedDatesError.message });
+        }
+        return;
+      }
+      const today = new Date();
       const lessonIds = classes.map((cls) => cls.lesson_id);
-      const teacherUids = Array.from(new Set(classes.map((cls) => cls.teacher_uid)));
+      const teacherUids = Array.from(new Set([
+        ...classes.map((cls) => cls.teacher_uid),
+        ...recurringClassRows.map((cls) => cls.teacher_uid),
+      ]));
       const teacherNames = new Map<string, string>();
-      const tutorDetails = new Map<string, { classLink: string; meetingPassword: string }>();
+      const tutorDetails = new Map<string, StudentTutorDetails>();
       const evaluations = new Map<string, EvaluationRow>();
 
-      if (teacherUids.length > 0) {
-        const { data: teacherProfiles, error: teacherError } = await supabase
-          .from("profiles")
-          .select("uid, name")
-          .in("uid", teacherUids);
+      const [teacherProfilesResult, tutorRowsResult, evaluationRowsResult] = await Promise.all([
+        teacherUids.length > 0
+          ? supabase
+              .from("profiles")
+              .select("uid, name, student_wechat_id, parent_wechat_id, student_email, parent_email, preferred_communication")
+              .in("uid", teacherUids)
+          : Promise.resolve({ data: [], error: null }),
+        teacherUids.length > 0
+          ? supabase
+              .from("tutor_profiles")
+              .select("uid, class_link, meeting_password")
+              .in("uid", teacherUids)
+          : Promise.resolve({ data: [], error: null }),
+        lessonIds.length > 0
+          ? supabase
+              .from("evaluations")
+              .select("evaluation_id, lesson_id, feedback, stars, created_at")
+              .in("lesson_id", lessonIds)
+              .order("created_at", { ascending: false })
+          : Promise.resolve({ data: [], error: null }),
+      ]);
 
-        if (teacherError) {
-          if (!cancelled) {
-            setStudentData({ ...emptyStudentDashboardData, loading: false, error: teacherError.message });
-          }
-          return;
-        }
-
-        teacherProfiles?.forEach((teacher) => {
-          teacherNames.set(teacher.uid, teacher.name);
-        });
-
-        const { data: tutorRows, error: tutorError } = await supabase
-          .from("tutor_profiles")
-          .select("uid, class_link, meeting_password")
-          .in("uid", teacherUids);
-
-        if (tutorError) {
-          if (!cancelled) {
-            setStudentData({ ...emptyStudentDashboardData, loading: false, error: tutorError.message });
-          }
-          return;
-        }
-
-        ((tutorRows ?? []) as TutorDetailsRow[]).forEach((tutor) => {
-          tutorDetails.set(tutor.uid, {
-            classLink: tutor.class_link,
-            meetingPassword: tutor.meeting_password,
-          });
-        });
-      }
-
-      if (lessonIds.length > 0) {
-        const { data: evaluationRows, error: evaluationsError } = await supabase
-          .from("evaluations")
-          .select("evaluation_id, lesson_id, feedback, stars, created_at")
-          .in("lesson_id", lessonIds)
-          .order("created_at", { ascending: false });
-
-        if (evaluationsError) {
-          if (!cancelled) {
-            setStudentData({ ...emptyStudentDashboardData, loading: false, error: evaluationsError.message });
-          }
-          return;
-        }
-
-        ((evaluationRows ?? []) as EvaluationRow[]).forEach((evaluation) => {
-          if (!evaluations.has(evaluation.lesson_id)) {
-            evaluations.set(evaluation.lesson_id, evaluation);
-          }
-        });
-      }
-
-      const today = new Date();
-      const { data: assignmentRows, error: assignmentsError } = await supabase
-        .from("assignments")
-        .select("assignment_id, lesson_id, student_uid, teacher_uid, name, description, due_date, complete")
-        .eq("student_uid", studentUid)
-        .eq("complete", false)
-        .order("due_date", { ascending: true });
-
-      if (assignmentsError) {
+      if (teacherProfilesResult.error) {
         if (!cancelled) {
-          setStudentData({ ...emptyStudentDashboardData, loading: false, error: assignmentsError.message });
+          setStudentData({ ...emptyStudentDashboardData, loading: false, error: teacherProfilesResult.error.message });
         }
         return;
       }
 
-      const assignmentData = (assignmentRows ?? []) as AssignmentRow[];
+      if (tutorRowsResult.error) {
+        if (!cancelled) {
+          setStudentData({ ...emptyStudentDashboardData, loading: false, error: tutorRowsResult.error.message });
+        }
+        return;
+      }
+
+      if (evaluationRowsResult.error) {
+        if (!cancelled) {
+          setStudentData({ ...emptyStudentDashboardData, loading: false, error: evaluationRowsResult.error.message });
+        }
+        return;
+      }
+
+      teacherProfilesResult.data?.forEach((teacher) => {
+        teacherNames.set(teacher.uid, teacher.name);
+        tutorDetails.set(teacher.uid, {
+          classLink: "",
+          meetingPassword: "",
+          tutorWechatId: teacher.student_wechat_id ?? "",
+          parentWechatId: teacher.parent_wechat_id ?? "",
+          tutorEmail: teacher.student_email ?? "",
+          parentEmail: teacher.parent_email ?? "",
+          preferredCommunication:
+            teacher.preferred_communication === "wechat"
+              || teacher.preferred_communication === "email"
+              ? teacher.preferred_communication
+              : "",
+        });
+      });
+
+      ((tutorRowsResult.data ?? []) as TutorDetailsRow[]).forEach((tutor) => {
+        const existing = tutorDetails.get(tutor.uid);
+        tutorDetails.set(tutor.uid, {
+          classLink: tutor.class_link,
+          meetingPassword: tutor.meeting_password,
+          tutorWechatId: existing?.tutorWechatId ?? "",
+          parentWechatId: existing?.parentWechatId ?? "",
+          tutorEmail: existing?.tutorEmail ?? "",
+          parentEmail: existing?.parentEmail ?? "",
+          preferredCommunication: existing?.preferredCommunication ?? "",
+        });
+      });
+
+      ((evaluationRowsResult.data ?? []) as EvaluationRow[]).forEach((evaluation) => {
+        if (!evaluations.has(evaluation.lesson_id)) {
+          evaluations.set(evaluation.lesson_id, evaluation);
+        }
+      });
       const missingAssignmentTeacherUids = Array.from(
         new Set(
           assignmentData
@@ -2586,24 +3164,6 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
             .filter((teacherUid) => !teacherNames.has(teacherUid))
         )
       );
-      if (missingAssignmentTeacherUids.length > 0) {
-        const { data: assignmentTeachers, error: assignmentTeachersError } = await supabase
-          .from("profiles")
-          .select("uid, name")
-          .in("uid", missingAssignmentTeacherUids);
-
-        if (assignmentTeachersError) {
-          if (!cancelled) {
-            setStudentData({ ...emptyStudentDashboardData, loading: false, error: assignmentTeachersError.message });
-          }
-          return;
-        }
-
-        assignmentTeachers?.forEach((teacher) => {
-          teacherNames.set(teacher.uid, teacher.name);
-        });
-      }
-
       const missingAssignmentLessonIds = Array.from(
         new Set(
           assignmentData
@@ -2612,35 +3172,82 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
             .filter((lessonId) => !evaluations.has(lessonId))
         )
       );
-      if (missingAssignmentLessonIds.length > 0) {
-        const { data: assignmentEvaluations, error: assignmentEvaluationsError } = await supabase
-          .from("evaluations")
-          .select("evaluation_id, lesson_id, feedback, stars, created_at")
-          .in("lesson_id", missingAssignmentLessonIds)
-          .order("created_at", { ascending: false });
+      const [assignmentTeachersResult, assignmentEvaluationsResult] = await Promise.all([
+        missingAssignmentTeacherUids.length > 0
+          ? supabase
+              .from("profiles")
+              .select("uid, name")
+              .in("uid", missingAssignmentTeacherUids)
+          : Promise.resolve({ data: [], error: null }),
+        missingAssignmentLessonIds.length > 0
+          ? supabase
+              .from("evaluations")
+              .select("evaluation_id, lesson_id, feedback, stars, created_at")
+              .in("lesson_id", missingAssignmentLessonIds)
+              .order("created_at", { ascending: false })
+          : Promise.resolve({ data: [], error: null }),
+      ]);
 
-        if (assignmentEvaluationsError) {
-          if (!cancelled) {
-            setStudentData({ ...emptyStudentDashboardData, loading: false, error: assignmentEvaluationsError.message });
-          }
-          return;
+      if (assignmentTeachersResult.error) {
+        if (!cancelled) {
+          setStudentData({ ...emptyStudentDashboardData, loading: false, error: assignmentTeachersResult.error.message });
         }
-
-        ((assignmentEvaluations ?? []) as EvaluationRow[]).forEach((evaluation) => {
-          if (!evaluations.has(evaluation.lesson_id)) {
-            evaluations.set(evaluation.lesson_id, evaluation);
-          }
-        });
+        return;
       }
+
+      if (assignmentEvaluationsResult.error) {
+        if (!cancelled) {
+          setStudentData({ ...emptyStudentDashboardData, loading: false, error: assignmentEvaluationsResult.error.message });
+        }
+        return;
+      }
+
+      assignmentTeachersResult.data?.forEach((teacher) => {
+        teacherNames.set(teacher.uid, teacher.name);
+      });
+
+      ((assignmentEvaluationsResult.data ?? []) as EvaluationRow[]).forEach((evaluation) => {
+        if (!evaluations.has(evaluation.lesson_id)) {
+          evaluations.set(evaluation.lesson_id, evaluation);
+        }
+      });
 
       const studentClassLabels = {
         tutor: t("common.tutor"),
         chineseClass: t("dashboard.chineseClass"),
         myNote: (value: string) => t("dashboard.myNote", { value }),
-        meetingPassword: (value: string) => t("dashboard.meetingPassword", { password: value }),
+        tutorWechatId: (value: string) => t("dashboard.tutorWechatId", { value }),
+        parentWechatId: (value: string) => t("dashboard.parentWechatId", { value }),
+        tutorAndParentWechatIds: (tutor: string, parent: string) =>
+          t("dashboard.tutorAndParentWechatIds", { tutor, parent }),
+        tutorEmail: (value: string) => t("dashboard.tutorCommunicationEmail", { value }),
+        parentEmail: (value: string) => t("dashboard.parentCommunicationEmail", { value }),
+        tutorAndParentEmails: (tutor: string, parent: string) =>
+          t("dashboard.tutorAndParentEmails", { tutor, parent }),
+        preferredCommunication: (value: string) => t("dashboard.preferredCommunication", {
+          value: value === "wechat" || value === "email"
+            ? t(`auth.preferredCommunication.${value}` as "auth.preferredCommunication.wechat" | "auth.preferredCommunication.email")
+            : value,
+        }),
         none: t("common.none"),
       };
       const uiClasses = classes.map((cls) => toStudentUIClass(cls, teacherNames, tutorDetails, evaluations, lang, studentClassLabels));
+      const recurringClasses = recurringClassRows.flatMap((recurringClass) => {
+        const nextClass = classes.find(
+          (cls) => cls.recurring_lesson_id === recurringClass.lesson_id && getClassStart(cls) > today
+        );
+        if (!nextClass) return [];
+        return [toUIRecurringClass(
+          recurringClass,
+          nextClass.lesson_id,
+          getClassStart(nextClass),
+          recurringClass.teacher_uid,
+          "tutor",
+          teacherNames.get(recurringClass.teacher_uid)?.trim() || t("common.tutor"),
+          skippedDatesBySeries.get(recurringClass.lesson_id) ?? [],
+          lang
+        )];
+      });
       const byStartTime = (a: UIClass, b: UIClass) => a.startsAt.getTime() - b.startsAt.getTime();
       const byEndTimeNearestCompleted = (a: UIClass, b: UIClass) => b.endsAt.getTime() - a.endsAt.getTime();
       const latestClass = classes
@@ -2692,10 +3299,12 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
         setStudentData({
           loading: false,
           error: "",
+          strikeStatus,
           feedback,
           assignments,
           upcomingClasses: uiClasses.filter((cls) => cls.startsAt > today).sort(byStartTime),
           completedClasses: uiClasses.filter((cls) => cls.endsAt < today).sort(byEndTimeNearestCompleted),
+          recurringClasses,
         });
       }
     }
@@ -2718,6 +3327,9 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
           <p className="text-sm text-muted-foreground mt-0.5">
             {t("dashboard.studentOverview")}
           </p>
+          <p className={`mt-1 text-xs font-medium ${strikeCountClass(studentData.strikeStatus.strikes)}`}>
+            {t("strikes.count", { count: studentData.strikeStatus.strikes })}
+          </p>
         </div>
       </div>
 
@@ -2729,6 +3341,13 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
       {cancelMessage && (
         <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
           {cancelMessage}
+        </div>
+      )}
+      {studentData.strikeStatus.isBanned && studentData.strikeStatus.bannedUntil && (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {t("strikes.bannedWarning", {
+            date: formatBanEnd(studentData.strikeStatus.bannedUntil, lang),
+          })}
         </div>
       )}
 
@@ -2753,17 +3372,19 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
         lang={lang}
         upcomingClasses={studentData.upcomingClasses}
         completedClasses={studentData.completedClasses}
+        recurringClasses={studentData.recurringClasses}
         loading={studentData.loading}
         onCancelClass={(cls) => {
           setCancelMessage("");
           setCancelError("");
           setCancelTarget(cls);
         }}
+        onCancelRecurring={cancelRecurringFromCard}
       />
       <Dialog.Root open={cancelTarget !== null} onOpenChange={(open) => !open && setCancelTarget(null)}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm" />
-          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-card p-5 shadow-xl">
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-border bg-card p-5 shadow-xl">
             <Dialog.Close
               className="absolute right-4 top-4 inline-flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-card-foreground"
               aria-label={t("common.close")}
@@ -2776,6 +3397,11 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
             <Dialog.Description className="mt-2 text-sm leading-relaxed text-muted-foreground">
               {cancelTarget?.recurringLessonId ? t("dashboard.cancelRecurringHelp") : t("dashboard.cancelClassHelp")}
             </Dialog.Description>
+            {isLateCancellation(cancelTarget?.startsAt, "student") && (
+              <p className="mt-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                {t("strikes.lateCancellationWarning")}
+              </p>
+            )}
             {cancelError && (
               <p className="mt-4 rounded-xl border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                 {cancelError}
@@ -2812,8 +3438,18 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
   const { t } = useLanguage();
   const [dashboardData, setDashboardData] = useState<TutorDashboardData>(emptyTutorDashboardData);
   const [storedUser, setStoredUser] = useState<StoredUser | null>(null);
-  const [currentTutorUid, setCurrentTutorUid] = useState("");
+  const [cancelTarget, setCancelTarget] = useState<CancelClassTarget | null>(null);
+  const [cancelError, setCancelError] = useState("");
+  const [cancelMessage, setCancelMessage] = useState("");
+  const [cancelling, setCancelling] = useState(false);
   const tutorName = storedUser?.name || t("common.tutor");
+
+  async function updateTutorStrikeStatus() {
+    const { status, error } = await refreshStrikeStatus();
+    if (!error) {
+      setDashboardData((current) => ({ ...current, strikeStatus: status }));
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -2832,10 +3468,6 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
 
       const { data: authData } = await supabase.auth.getUser();
       const tutorUid = authData.user?.id ?? stored?.uid;
-      if (!cancelled) {
-        setCurrentTutorUid(tutorUid ?? "");
-      }
-
       if (!tutorUid) {
         if (!cancelled) {
           setDashboardData({
@@ -2847,11 +3479,27 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
         return;
       }
 
-      const { data: tutorProfile, error: tutorProfileError } = await supabase
-        .from("profiles")
-        .select("uid, role, name, email")
-        .eq("uid", tutorUid)
-        .maybeSingle();
+      const [strikeStatusResult, tutorProfileResult] = await Promise.all([
+        refreshStrikeStatus(),
+        supabase
+          .from("profiles")
+          .select("uid, role, name, email")
+          .eq("uid", tutorUid)
+          .maybeSingle(),
+      ]);
+      const { status: strikeStatus, error: strikeStatusError } = strikeStatusResult;
+      if (strikeStatusError) {
+        if (!cancelled) {
+          setDashboardData({
+            ...emptyTutorDashboardData,
+            loading: false,
+            error: strikeStatusError.message,
+          });
+        }
+        return;
+      }
+
+      const { data: tutorProfile, error: tutorProfileError } = tutorProfileResult;
 
       if (tutorProfileError || !tutorProfile) {
         if (!cancelled) {
@@ -2879,92 +3527,150 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
       const now = new Date();
       const classColumns = "lesson_id, student_uid, teacher_uid, time, duration, evaluation_completed, student_attended, teacher_attended, student_wants_to_share, recurring_lesson_id, status";
 
-      const { data: tutorClassRowsData, error: tutorClassesError } = await supabase
-        .from("classes")
-        .select(classColumns)
-        .eq("teacher_uid", tutorUid)
-        .or("status.is.null,status.neq.cancelled")
-        .order("time", { ascending: true });
+      const [tutorClassesResult, recurringResult] = await Promise.all([
+        supabase
+          .from("classes")
+          .select(classColumns)
+          .eq("teacher_uid", tutorUid)
+          .or("status.is.null,status.neq.cancelled")
+          .order("time", { ascending: true }),
+        supabase
+          .from("recurring_classes")
+          .select("lesson_id, student_uid, teacher_uid, time, duration")
+          .eq("teacher_uid", tutorUid)
+          .order("time", { ascending: true }),
+      ]);
 
-      if (tutorClassesError) {
+      if (tutorClassesResult.error) {
         if (!cancelled) {
           setDashboardData({
             ...emptyTutorDashboardData,
             loading: false,
-            error: tutorClassesError.message,
+            error: tutorClassesResult.error.message,
           });
         }
         return;
       }
 
-      const tutorClassRows = (tutorClassRowsData ?? []) as ClassRow[];
+      if (recurringResult.error) {
+        if (!cancelled) {
+          setDashboardData({
+            ...emptyTutorDashboardData,
+            loading: false,
+            error: recurringResult.error.message,
+          });
+        }
+        return;
+      }
+
+      const tutorClassRows = (tutorClassesResult.data ?? []) as ClassRow[];
+      const recurringClassRows = (recurringResult.data ?? []) as RecurringClassRow[];
+      const { skippedDatesBySeries, error: skippedDatesError } =
+        await loadRecurringSkippedDates(recurringClassRows);
+      if (skippedDatesError) {
+        if (!cancelled) {
+          setDashboardData({
+            ...emptyTutorDashboardData,
+            loading: false,
+            error: skippedDatesError.message,
+          });
+        }
+        return;
+      }
       const completedClassRows = tutorClassRows.filter((cls) => getClassEnd(cls) < now);
       const upcomingClassRows = tutorClassRows.filter((cls) => getClassEnd(cls) >= now);
       const classes = [...completedClassRows, ...upcomingClassRows];
-      const studentUids = Array.from(new Set(classes.map((cls) => cls.student_uid)));
+      const studentUids = Array.from(new Set([
+        ...classes.map((cls) => cls.student_uid),
+        ...recurringClassRows.map((cls) => cls.student_uid),
+      ]));
       const completedStudentUids = Array.from(new Set(completedClassRows.map((cls) => cls.student_uid)));
       const studentProfiles = new Map<string, BasicProfile>();
 
-      if (studentUids.length > 0) {
-        const { data: profiles, error: profilesError } = await supabase
-          .from("profiles")
-          .select("uid, name, email, wechat_id")
-          .in("uid", studentUids);
+      const [
+        studentProfilesResult,
+        volunteerRecordsResult,
+        tutorDetailsResult,
+        availabilityResult,
+      ] = await Promise.all([
+        studentUids.length > 0
+          ? supabase
+              .from("profiles")
+              .select("uid, role, name, student_wechat_id, parent_wechat_id")
+              .in("uid", studentUids)
+          : Promise.resolve({ data: [], error: null }),
+        supabase
+          .from("volunteer_records")
+          .select("minutes")
+          .eq("tutor_uid", tutorUid),
+        supabase
+          .from("tutor_profiles")
+          .select("class_link, meeting_password")
+          .eq("uid", tutorUid)
+          .maybeSingle(),
+        supabase
+          .from("tutor_availability")
+          .select("tutor_uid")
+          .eq("tutor_uid", tutorUid)
+          .eq("weekend_date", currentBeijingWeekendDate())
+          .maybeSingle(),
+      ]);
 
-        if (profilesError) {
-          if (!cancelled) {
-            setDashboardData({
-              ...emptyTutorDashboardData,
-              loading: false,
-              error: profilesError.message,
-            });
-          }
-          return;
-        }
-
-        ((profiles ?? []) as BasicProfile[]).forEach((profile) => {
-          studentProfiles.set(profile.uid, profile);
-        });
-      }
-
-      const { data: volunteerRecords, error: volunteerRecordsError } = await supabase
-        .from("volunteer_records")
-        .select("minutes")
-        .eq("tutor_uid", tutorUid);
-
-      if (volunteerRecordsError) {
+      if (studentProfilesResult.error) {
         if (!cancelled) {
           setDashboardData({
             ...emptyTutorDashboardData,
             loading: false,
-            error: volunteerRecordsError.message,
+            error: studentProfilesResult.error.message,
           });
         }
         return;
       }
 
-      const tutorDetailsSelect = ["class_link", "meeting_password", ...tutorAvailabilityColumns].join(", ");
-      const { data: tutorDetails, error: tutorDetailsError } = await supabase
-        .from("tutor_profiles")
-        .select(tutorDetailsSelect)
-        .eq("uid", tutorUid)
-        .maybeSingle();
-
-      if (tutorDetailsError) {
+      if (volunteerRecordsResult.error) {
         if (!cancelled) {
           setDashboardData({
             ...emptyTutorDashboardData,
             loading: false,
-            error: tutorDetailsError.message,
+            error: volunteerRecordsResult.error.message,
           });
         }
         return;
       }
 
-      const tutorDetailsRow = tutorDetails as Record<string, string | boolean | null> | null;
-      const availabilityNeedsSetup =
-        !tutorDetailsRow ||
-        tutorAvailabilityColumns.some((column) => tutorDetailsRow[column] === null);
+      if (tutorDetailsResult.error) {
+        if (!cancelled) {
+          setDashboardData({
+            ...emptyTutorDashboardData,
+            loading: false,
+            error: tutorDetailsResult.error.message,
+          });
+        }
+        return;
+      }
+
+      if (availabilityResult.error) {
+        if (!cancelled) {
+          setDashboardData({
+            ...emptyTutorDashboardData,
+            loading: false,
+            error: availabilityResult.error.message,
+          });
+        }
+        return;
+      }
+
+      ((studentProfilesResult.data ?? []) as BasicProfile[]).forEach((profile) => {
+        studentProfiles.set(profile.uid, profile);
+      });
+
+      const volunteerRecords = volunteerRecordsResult.data;
+      const tutorDetails = tutorDetailsResult.data;
+      const availabilityRow = availabilityResult.data;
+      const tutorDetailsRow = tutorDetails as Record<string, string | null> | null;
+      const beijingDay = beijingCalendarToday().getDay();
+      const availabilityDeadlinePassed = beijingDay === 5 || beijingDay === 6 || beijingDay === 0;
+      const availabilityNeedsSetup = !availabilityRow && !availabilityDeadlinePassed;
       const meetingDetails = tutorDetails
         ? {
             classLink: String(tutorDetailsRow?.class_link ?? ""),
@@ -2981,6 +3687,22 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
       };
       const completedUiClasses = completedClassRows.map((cls) => toUIClass(cls, studentProfiles, currentTutorName, meetingDetails, lang, tutorClassLabels));
       const upcomingUiClasses = upcomingClassRows.map((cls) => toUIClass(cls, studentProfiles, currentTutorName, meetingDetails, lang, tutorClassLabels));
+      const recurringClasses = recurringClassRows.flatMap((recurringClass) => {
+        const nextClass = upcomingClassRows.find(
+          (cls) => cls.recurring_lesson_id === recurringClass.lesson_id && getClassStart(cls) > now
+        );
+        if (!nextClass) return [];
+        return [toUIRecurringClass(
+          recurringClass,
+          nextClass.lesson_id,
+          getClassStart(nextClass),
+          recurringClass.student_uid,
+          "student",
+          studentProfiles.get(recurringClass.student_uid)?.name ?? t("common.student"),
+          skippedDatesBySeries.get(recurringClass.lesson_id) ?? [],
+          lang
+        )];
+      });
       const byStartTime = (a: UIClass, b: UIClass) => a.startsAt.getTime() - b.startsAt.getTime();
       const byEndTimeNearestCompleted = (a: UIClass, b: UIClass) => b.endsAt.getTime() - a.endsAt.getTime();
       const totalVolunteerMinutes = ((volunteerRecords ?? []) as VolunteerRecordRow[]).reduce(
@@ -2992,6 +3714,7 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
         setDashboardData({
           loading: false,
           error: "",
+          strikeStatus,
           availabilityNeedsSetup,
           stats: {
             totalClasses: completedClassRows.length,
@@ -2999,10 +3722,11 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
             totalMinutes: totalVolunteerMinutes,
           },
           pendingEvaluations: completedUiClasses
-            .filter((cls) => !cls.evaluationCompleted)
+            .filter((cls) => !cls.evaluationCompleted && studentProfiles.get(cls.studentUid)?.role !== "deleted")
             .sort(byEndTimeNearestCompleted),
           upcomingClasses: upcomingUiClasses.sort(byStartTime),
           completedClasses: completedUiClasses.sort(byEndTimeNearestCompleted),
+          recurringClasses,
         });
       }
     }
@@ -3015,6 +3739,55 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
     };
   }, []);
 
+  async function cancelTutorRecurringClass(recurringClass: UIRecurringClass) {
+    const { error } = await supabase.rpc("secure_cancel_class", {
+      p_lesson_id: recurringClass.nextLessonId,
+      p_series: true,
+    });
+    if (error) throw error;
+    void dispatchReminderEmails();
+    await updateTutorStrikeStatus();
+
+    setDashboardData((current) => ({
+      ...current,
+      recurringClasses: current.recurringClasses.filter((cls) => cls.id !== recurringClass.id),
+      upcomingClasses: current.upcomingClasses.filter((cls) => cls.recurringLessonId !== recurringClass.id),
+    }));
+  }
+
+  async function handleTutorCancelClass(series: boolean) {
+    if (!cancelTarget) return;
+    setCancelling(true);
+    setCancelError("");
+
+    const { error } = await supabase.rpc("secure_cancel_class", {
+      p_lesson_id: cancelTarget.id,
+      p_series: series,
+    });
+
+    if (error) {
+      console.error("Failed to cancel tutor class", error);
+      setCancelError(error.message);
+      setCancelling(false);
+      return;
+    }
+    void dispatchReminderEmails();
+    await updateTutorStrikeStatus();
+
+    setDashboardData((current) => ({
+      ...current,
+      upcomingClasses: series && cancelTarget.recurringLessonId
+        ? current.upcomingClasses.filter((cls) => cls.recurringLessonId !== cancelTarget.recurringLessonId)
+        : current.upcomingClasses.filter((cls) => cls.id !== cancelTarget.id),
+      recurringClasses: series && cancelTarget.recurringLessonId
+        ? current.recurringClasses.filter((cls) => cls.id !== cancelTarget.recurringLessonId)
+        : current.recurringClasses,
+    }));
+    setCancelMessage(t("dashboard.classCancelled"));
+    setCancelTarget(null);
+    setCancelling(false);
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
@@ -3025,11 +3798,9 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
           <p className="text-sm text-muted-foreground mt-0.5">
             {t("dashboard.tutorOverview")}
           </p>
-          {currentTutorUid && (
-            <p className="mt-1 text-xs text-muted-foreground">
-              {t("common.tutorUid", { uid: currentTutorUid })}
-            </p>
-          )}
+          <p className={`mt-1 text-xs font-medium ${strikeCountClass(dashboardData.strikeStatus.strikes)}`}>
+            {t("strikes.count", { count: dashboardData.strikeStatus.strikes })}
+          </p>
         </div>
       </div>
 
@@ -3038,8 +3809,23 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
           {dashboardData.error}
         </div>
       )}
+      {cancelMessage && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+          {cancelMessage}
+        </div>
+      )}
+      {dashboardData.strikeStatus.isBanned && dashboardData.strikeStatus.bannedUntil && (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {t("strikes.bannedWarning", {
+            date: formatBanEnd(dashboardData.strikeStatus.bannedUntil, lang),
+          })}
+        </div>
+      )}
 
-      {!dashboardData.loading && !dashboardData.error && dashboardData.availabilityNeedsSetup && (
+      {!dashboardData.loading
+        && !dashboardData.error
+        && !dashboardData.strikeStatus.isBanned
+        && dashboardData.availabilityNeedsSetup && (
         <div className="flex flex-col gap-4 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-amber-950 shadow-sm sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-start gap-3">
             <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-amber-200">
@@ -3075,10 +3861,62 @@ export function TutorDashboardPage({ lang }: { lang: string }) {
         feedbackPendingLabel={t("dashboard.writeEvaluation")}
         upcomingClasses={dashboardData.upcomingClasses}
         completedClasses={dashboardData.completedClasses}
+        recurringClasses={dashboardData.recurringClasses}
         loading={dashboardData.loading}
         useEvaluationPage
         attendee="teacher"
+        onCancelRecurring={cancelTutorRecurringClass}
+        onCancelClass={(cls) => {
+          setCancelMessage("");
+          setCancelError("");
+          setCancelTarget(cls);
+        }}
       />
+      <Dialog.Root open={cancelTarget !== null} onOpenChange={(open) => !open && setCancelTarget(null)}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-border bg-card p-5 shadow-xl">
+            <Dialog.Close
+              className="absolute right-4 top-4 inline-flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-card-foreground"
+              aria-label={t("common.close")}
+            >
+              <X className="h-4 w-4" />
+            </Dialog.Close>
+            <Dialog.Title className="pr-10 text-card-foreground">
+              {cancelTarget?.recurringLessonId ? t("dashboard.cancelRecurringTitle") : t("dashboard.cancelClassTitle")}
+            </Dialog.Title>
+            <Dialog.Description className="mt-2 text-sm leading-relaxed text-muted-foreground">
+              {cancelTarget?.recurringLessonId ? t("dashboard.cancelRecurringHelp") : t("dashboard.cancelClassHelp")}
+            </Dialog.Description>
+            {isLateCancellation(cancelTarget?.startsAt, "tutor") && (
+              <p className="mt-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                {t("strikes.lateCancellationWarning")}
+              </p>
+            )}
+            {cancelError && <p className="mt-4 text-sm text-destructive">{cancelError}</p>}
+            <div className={`mt-5 grid w-full gap-2 ${cancelTarget?.recurringLessonId ? "sm:grid-cols-2" : ""}`}>
+              {cancelTarget?.recurringLessonId && (
+                <button
+                  type="button"
+                  onClick={() => void handleTutorCancelClass(true)}
+                  disabled={cancelling}
+                  className="w-full rounded-xl border border-destructive/30 px-4 py-2 text-sm text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
+                >
+                  {t("dashboard.cancelRecurringSeries")}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => void handleTutorCancelClass(false)}
+                disabled={cancelling}
+                className="w-full rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+              >
+                {cancelTarget?.recurringLessonId ? t("dashboard.cancelThisClass") : t("common.confirm")}
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
   );
 }
@@ -3100,11 +3938,12 @@ export function AppShell({
   trainingHref,
   volunteerAwardHref,
   studentMaterialsHref,
+  speakingSamplesHref,
   manageMediaHref,
   communicationsHref,
   requiredRole,
 }: {
-  activePage: "dashboard" | "schedule" | "record" | "training" | "awards" | "studentMaterials" | "manageMedia" | "communications";
+  activePage: "dashboard" | "schedule" | "record" | "training" | "awards" | "studentMaterials" | "speakingSamples" | "manageMedia" | "communications";
   children: (lang: string) => ReactNode;
   user?: typeof STUDENT;
   dashboardHref?: string;
@@ -3113,6 +3952,7 @@ export function AppShell({
   trainingHref?: string;
   volunteerAwardHref?: string;
   studentMaterialsHref?: string;
+  speakingSamplesHref?: string;
   manageMediaHref?: string;
   communicationsHref?: string;
   requiredRole?: AccountRole;
@@ -3128,6 +3968,7 @@ export function AppShell({
         trainingHref={trainingHref}
         volunteerAwardHref={volunteerAwardHref}
         studentMaterialsHref={studentMaterialsHref}
+        speakingSamplesHref={speakingSamplesHref}
         manageMediaHref={manageMediaHref}
         communicationsHref={communicationsHref}
         requiredRole={requiredRole}
@@ -3148,11 +3989,12 @@ function AppShellContent({
   trainingHref,
   volunteerAwardHref,
   studentMaterialsHref,
+  speakingSamplesHref,
   manageMediaHref,
   communicationsHref,
   requiredRole,
 }: {
-  activePage: "dashboard" | "schedule" | "record" | "training" | "awards" | "studentMaterials" | "manageMedia" | "communications";
+  activePage: "dashboard" | "schedule" | "record" | "training" | "awards" | "studentMaterials" | "speakingSamples" | "manageMedia" | "communications";
   children: (lang: string) => ReactNode;
   user: typeof STUDENT;
   dashboardHref: string;
@@ -3161,6 +4003,7 @@ function AppShellContent({
   trainingHref?: string;
   volunteerAwardHref?: string;
   studentMaterialsHref?: string;
+  speakingSamplesHref?: string;
   manageMediaHref?: string;
   communicationsHref?: string;
   requiredRole?: AccountRole;
@@ -3173,6 +4016,10 @@ function AppShellContent({
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [storedUser, setStoredUser] = useState<StoredUser | null>(null);
   const [authChecked, setAuthChecked] = useState(!requiredRole);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [rulesRequired, setRulesRequired] = useState(false);
+  const [notificationMethod, setNotificationMethod] = useState<"wechat" | "email" | "phone" | null>(null);
+  const [accessError, setAccessError] = useState("");
   const fallbackName =
     requiredRole === "tutor"
       ? t("common.tutor")
@@ -3189,6 +4036,7 @@ function AppShellContent({
     let cancelled = false;
     if (requiredRole) {
       setAuthChecked(false);
+      setAccessError("");
     }
 
     function handleStoredUserUpdated(event: Event) {
@@ -3217,13 +4065,24 @@ function AppShellContent({
         return;
       }
 
+      await refreshStrikeStatus();
+
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
-        .select("uid, role, name, email")
+        .select("uid, role, name, email, notification_method, rules_acknowledged_at")
         .eq("uid", authData.user.id)
         .maybeSingle();
 
-      if (profileError || !profile) {
+      if (profileError) {
+        console.error("Failed to load profile while checking page access", profileError);
+        if (!cancelled) {
+          setAccessError(profileError.message);
+          setAuthChecked(true);
+        }
+        return;
+      }
+
+      if (!profile) {
         router.replace(signInPath);
         return;
       }
@@ -3245,6 +4104,27 @@ function AppShellContent({
 
       if (!cancelled) {
         setStoredUser(currentUser);
+        if (profile.role === "student" || profile.role === "tutor") {
+          const registrationNotificationMethod =
+            authData.user.user_metadata?.pending_registration?.details?.notification_method;
+          setNotificationMethod(
+            profile.notification_method === "wechat"
+              || profile.notification_method === "email"
+              || profile.notification_method === "phone"
+              ? profile.notification_method
+              : registrationNotificationMethod === "wechat"
+                  || registrationNotificationMethod === "email"
+                  || registrationNotificationMethod === "phone"
+                ? registrationNotificationMethod
+                : "email"
+          );
+          if (profile.rules_acknowledged_at === null) {
+            setRulesRequired(true);
+            setRulesOpen(true);
+          } else {
+            setRulesRequired(false);
+          }
+        }
         setAuthChecked(true);
       }
     }
@@ -3265,22 +4145,42 @@ function AppShellContent({
     );
   }
 
+  if (accessError) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background p-6">
+        <div className="max-w-md rounded-2xl border border-destructive/20 bg-card p-5 text-sm text-destructive">
+          {accessError}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-screen flex-col bg-background md:h-screen md:overflow-hidden">
       <TopNav
         user={navUser}
         onMenuClick={() => setSidebarOpen(true)}
         onUserUpdated={setStoredUser}
+        onRulesClick={
+          requiredRole === "student" || requiredRole === "tutor"
+            ? () => {
+                setRulesRequired(false);
+                setRulesOpen(true);
+              }
+            : undefined
+        }
       />
       <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
         <Sidebar
           active={activePage}
           dashboardHref={dashboardHref}
           scheduleHref={scheduleHref}
+          scheduleLabel={requiredRole === "tutor" ? t("schedule.setAvailability") : t("schedule.studentTitle")}
           recordHref={recordHref}
           trainingHref={trainingHref}
           volunteerAwardHref={volunteerAwardHref}
           studentMaterialsHref={studentMaterialsHref}
+          speakingSamplesHref={speakingSamplesHref}
           manageMediaHref={manageMediaHref}
           communicationsHref={communicationsHref}
           open={sidebarOpen}
@@ -3290,13 +4190,28 @@ function AppShellContent({
           {children(lang)}
         </main>
       </div>
+      {(requiredRole === "student" || requiredRole === "tutor") && (
+        <AccountRulesDialog
+          open={rulesOpen}
+          required={rulesRequired}
+          role={requiredRole}
+          notificationMethod={notificationMethod}
+          onOpenChange={setRulesOpen}
+          onAcknowledge={async () => {
+            const { error } = await supabase.rpc("acknowledge_current_user_rules");
+            if (error) throw error;
+            setRulesRequired(false);
+            setRulesOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 }
 
 export function StudentScheduleApp() {
   return (
-    <AppShell activePage="schedule" studentMaterialsHref="/student-materials" communicationsHref="/student-communications" requiredRole="student">
+    <AppShell activePage="schedule" studentMaterialsHref="/student-materials" speakingSamplesHref="/speaking-samples" communicationsHref="/student-communications" requiredRole="student">
       {(lang) => <StudentSchedulePage lang={lang} />}
     </AppShell>
   );
@@ -3344,15 +4259,23 @@ export function VolunteerAwardsApp() {
 
 export function StudentMaterialsApp() {
   return (
-    <AppShell activePage="studentMaterials" studentMaterialsHref="/student-materials" communicationsHref="/student-communications" requiredRole="student">
+    <AppShell activePage="studentMaterials" studentMaterialsHref="/student-materials" speakingSamplesHref="/speaking-samples" communicationsHref="/student-communications" requiredRole="student">
       {() => <MediaListPage category="student_material" titleKey="media.studentMaterialTitle" helpKey="media.studentMaterialHelp" />}
+    </AppShell>
+  );
+}
+
+export function StudentSpeakingSamplesApp() {
+  return (
+    <AppShell activePage="speakingSamples" studentMaterialsHref="/student-materials" speakingSamplesHref="/speaking-samples" communicationsHref="/student-communications" requiredRole="student">
+      {() => <StudentSpeakingSamplesPage />}
     </AppShell>
   );
 }
 
 export function StudentCommunicationsApp() {
   return (
-    <AppShell activePage="communications" studentMaterialsHref="/student-materials" communicationsHref="/student-communications" requiredRole="student">
+    <AppShell activePage="communications" studentMaterialsHref="/student-materials" speakingSamplesHref="/speaking-samples" communicationsHref="/student-communications" requiredRole="student">
       {() => <CommunicationsPage viewerRole="student" />}
     </AppShell>
   );
@@ -3392,7 +4315,7 @@ export function AdminCommunicationsApp() {
 
 export default function App() {
   return (
-    <AppShell activePage="dashboard" studentMaterialsHref="/student-materials" communicationsHref="/student-communications" requiredRole="student">
+    <AppShell activePage="dashboard" studentMaterialsHref="/student-materials" speakingSamplesHref="/speaking-samples" communicationsHref="/student-communications" requiredRole="student">
       {(lang) => <StudentDashboardPage lang={lang} />}
     </AppShell>
   );

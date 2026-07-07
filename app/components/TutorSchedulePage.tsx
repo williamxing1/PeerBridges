@@ -2,9 +2,12 @@
 
 import { useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { CalendarDays, Clock, User, X } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Clock, User, X } from "lucide-react";
 import { supabase } from "../../lib/supabase/client";
 import { useLanguage } from "../i18n";
+import { beijingCalendarToday, beijingMidnightInstant, calendarDateValue, formatLocalDeadline } from "../lib/weekend";
+import { emptyStrikeStatus, isLateCancellation, refreshStrikeStatus } from "../lib/strikes";
+import { dispatchReminderEmails } from "../lib/reminderEmails";
 
 type Day = "sat" | "sun";
 type Availability = Record<Day, number[]>;
@@ -13,16 +16,24 @@ type Booking = {
   note: string;
   date: string;
   time: string;
-};
-type TutorProfileAvailability = Record<string, boolean | null>;
-type ClassRow = {
-  lesson_id: string;
-  student_uid: string;
-  teacher_uid: string;
-  time: string;
+  startsAt: string;
   duration: number;
-  student_wants_to_share?: string | null;
-  status?: string | null;
+  lessonId: string | null;
+  recurringLessonId: string | null;
+  virtual: boolean;
+};
+type TutorAvailabilityRow = {
+  tutor_uid: string;
+  weekend_date: string;
+} & Record<string, boolean | string>;
+type ScheduleOccupancyRow = {
+  slot_time: string;
+  slot_duration: number;
+  lesson_id: string | null;
+  recurring_lesson_id: string | null;
+  student_uid: string | null;
+  is_virtual: boolean;
+  student_note: string | null;
 };
 type StoredUser = {
   uid: string;
@@ -48,8 +59,7 @@ const AVAILABILITY_COLUMNS = (["sat", "sun"] as Day[]).flatMap((day) =>
 );
 
 function getBaseWeekendDates() {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const today = beijingCalendarToday();
   const dayOfWeek = today.getDay();
   const afterTutorCutoff = dayOfWeek >= 5 || dayOfWeek === 0;
   let daysUntilSat = (6 - dayOfWeek + 7) % 7;
@@ -63,12 +73,10 @@ function getBaseWeekendDates() {
   return { sat, sun, afterTutorCutoff };
 }
 
-function getWeekendDates(showNextWeekend: boolean) {
+function getWeekendDates(offset = 0) {
   const base = getBaseWeekendDates();
-  if (!showNextWeekend) return base;
-
   const sat = new Date(base.sat);
-  sat.setDate(base.sat.getDate() + 7);
+  sat.setDate(base.sat.getDate() + offset * 7);
   const sun = new Date(sat);
   sun.setDate(sat.getDate() + 1);
   return { ...base, sat, sun };
@@ -135,22 +143,20 @@ function readStoredUser() {
   }
 }
 
-function profileToAvailability(profile: TutorProfileAvailability | null) {
-  if (!profile) {
+function rowToAvailability(row: TutorAvailabilityRow | null) {
+  if (!row) {
     return {
       availability: { sat: ALL_SLOT_INDICES, sun: ALL_SLOT_INDICES },
       unset: true,
     };
   }
 
-  const unset = AVAILABILITY_COLUMNS.some((column) => profile[column] === null);
-
   return {
     availability: {
-      sat: ALL_SLOT_INDICES.filter((idx) => profile[availabilityColumn("sat", idx)] !== false),
-      sun: ALL_SLOT_INDICES.filter((idx) => profile[availabilityColumn("sun", idx)] !== false),
+      sat: ALL_SLOT_INDICES.filter((idx) => row[availabilityColumn("sat", idx)] !== false),
+      sun: ALL_SLOT_INDICES.filter((idx) => row[availabilityColumn("sun", idx)] !== false),
     },
-    unset,
+    unset: false,
   };
 }
 
@@ -169,17 +175,14 @@ function slotIndexForInstant(date: Date, instant: Date) {
   return Math.round((instant.getTime() - beijingSlotInstant(date, 0).getTime()) / 1800000);
 }
 
-function weekendWindow(dates: { sat: Date; sun: Date }) {
-  return {
-    start: beijingSlotInstant(dates.sat, 0),
-    end: beijingSlotInstant(dates.sun, SLOT_TIMES.length - 1, true),
-  };
-}
-
-function classInWeekend(cls: ClassRow, dates: { sat: Date; sun: Date }) {
-  const startsAt = new Date(cls.time);
-  const { start, end } = weekendWindow(dates);
-  return startsAt >= start && startsAt < end;
+function fullWeekendWindow(dates: { sat: Date; sun: Date }) {
+  const start = new Date(Date.UTC(
+    dates.sat.getFullYear(),
+    dates.sat.getMonth(),
+    dates.sat.getDate(),
+    -8
+  ));
+  return { start, end: new Date(start.getTime() + 48 * 60 * 60 * 1000) };
 }
 
 function BookingPanel({
@@ -267,14 +270,14 @@ function CancelBookingDialog({
 }: {
   booking: Booking | null;
   onCancel: () => void;
-  onConfirm: () => void;
+  onConfirm: () => void | Promise<void>;
 }) {
   const { t } = useLanguage();
   return (
     <Dialog.Root open={booking !== null} onOpenChange={(open) => !open && onCancel()}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-card p-5 shadow-xl">
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-border bg-card p-5 shadow-xl">
           <div className="flex items-start justify-between gap-4">
             <div>
               <Dialog.Title className="text-card-foreground">
@@ -283,6 +286,11 @@ function CancelBookingDialog({
               <Dialog.Description className="mt-2 text-sm text-muted-foreground leading-relaxed">
                 {t("schedule.cancelBookedClassHelp", { student: booking?.student ?? "" })}
               </Dialog.Description>
+              {isLateCancellation(booking?.startsAt, "tutor") && (
+                <p className="mt-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                  {t("strikes.lateCancellationWarning")}
+                </p>
+              )}
             </div>
             <button
               onClick={onCancel}
@@ -303,6 +311,105 @@ function CancelBookingDialog({
               className="rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 transition-colors"
             >
               {t("common.confirm")}
+            </button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function WeekendUnavailableDialog({
+  open,
+  dateRange,
+  showStrikeWarning,
+  saving,
+  onCancel,
+  onConfirm,
+}: {
+  open: boolean;
+  dateRange: string;
+  showStrikeWarning: boolean;
+  saving: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const { t } = useLanguage();
+  return (
+    <Dialog.Root open={open} onOpenChange={(nextOpen) => !nextOpen && onCancel()}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-border bg-card p-5 shadow-xl">
+          <Dialog.Title className="text-card-foreground">
+            {t("schedule.markWeekendUnavailableTitle")}
+          </Dialog.Title>
+          <Dialog.Description className="mt-2 text-sm leading-relaxed text-muted-foreground">
+            {t("schedule.markWeekendUnavailableHelp", { dateRange })}
+          </Dialog.Description>
+          {showStrikeWarning && (
+            <p className="mt-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              {t("strikes.lateWeekendCancellationWarning")}
+            </p>
+          )}
+          <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={saving}
+              className="rounded-xl border border-border px-4 py-2 text-sm text-card-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {t("common.cancel")}
+            </button>
+            <button
+              type="button"
+              onClick={onConfirm}
+              disabled={saving}
+              className="rounded-xl bg-destructive px-4 py-2 text-sm text-destructive-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {saving ? t("schedule.markingWeekendUnavailable") : t("common.proceed")}
+            </button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function UnsavedWeekendDialog({
+  open,
+  onCancel,
+  onConfirm,
+}: {
+  open: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const { t } = useLanguage();
+  return (
+    <Dialog.Root open={open} onOpenChange={(nextOpen) => !nextOpen && onCancel()}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-border bg-card p-5 shadow-xl">
+          <Dialog.Title className="text-card-foreground">
+            {t("schedule.unsavedWeekendTitle")}
+          </Dialog.Title>
+          <Dialog.Description className="mt-2 text-sm leading-relaxed text-muted-foreground">
+            {t("schedule.unsavedWeekendHelp")}
+          </Dialog.Description>
+          <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="rounded-xl border border-border px-4 py-2 text-sm text-card-foreground transition-colors hover:bg-accent"
+            >
+              {t("schedule.keepEditing")}
+            </button>
+            <button
+              type="button"
+              onClick={onConfirm}
+              className="rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground transition-colors hover:bg-primary/90"
+            >
+              {t("schedule.discardAndContinue")}
             </button>
           </div>
         </Dialog.Content>
@@ -401,7 +508,7 @@ function DayColumn({
 
 export function TutorSchedulePage({ lang }: { lang: string }) {
   const { t } = useLanguage();
-  const [weekendDates, setWeekendDates] = useState(() => getWeekendDates(false));
+  const [weekendOffset, setWeekendOffset] = useState(0);
   const [availability, setAvailability] = useState<Availability>({
     sat: ALL_SLOT_INDICES,
     sun: ALL_SLOT_INDICES,
@@ -413,13 +520,23 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
   const [availabilityUnset, setAvailabilityUnset] = useState(false);
   const [saved, setSaved] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [currentTutorUid, setCurrentTutorUid] = useState("");
   const [selectedBookingKey, setSelectedBookingKey] = useState<string | null>(null);
   const [pendingCancel, setPendingCancel] = useState<{ day: Day; slotIdx: number; booking: Booking } | null>(null);
+  const [weekendDialogOpen, setWeekendDialogOpen] = useState(false);
+  const [markingWeekendUnavailable, setMarkingWeekendUnavailable] = useState(false);
+  const [weekendMarkedUnavailable, setWeekendMarkedUnavailable] = useState(false);
+  const [pendingWeekendOffset, setPendingWeekendOffset] = useState<number | null>(null);
+  const [strikeStatus, setStrikeStatus] = useState(emptyStrikeStatus);
 
+  const weekendDates = getWeekendDates(weekendOffset);
+  const availabilityDeadline = formatLocalDeadline(beijingMidnightInstant(weekendDates.sat, -1), lang);
   const selectedBooking = selectedBookingKey ? bookings[selectedBookingKey] : null;
   const hasAvailability = availability.sat.length + availability.sun.length > 0;
-  const changesLocked = weekendDates.afterTutorCutoff;
+  const changesLocked =
+    strikeStatus.isBanned
+    || weekendOffset < 0
+    || (weekendOffset === 0 && weekendDates.afterTutorCutoff);
+  const weekendDateRange = `${formatLocalSlotDate(weekendDates.sat, lang)} – ${formatLocalSlotDate(weekendDates.sun, lang)}`;
 
   async function getTutorUid() {
     const { data } = await supabase.auth.getUser();
@@ -434,9 +551,6 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
       setError("");
 
       const tutorUid = await getTutorUid();
-      if (!cancelled) {
-        setCurrentTutorUid(tutorUid ?? "");
-      }
       if (!tutorUid) {
         if (!cancelled) {
           setError(t("common.noTutorUid"));
@@ -445,63 +559,62 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
         return;
       }
 
-      const availabilitySelect = AVAILABILITY_COLUMNS.join(", ");
-      const { data: profile, error: profileError } = await supabase
-        .from("tutor_profiles")
-        .select(availabilitySelect)
-        .eq("uid", tutorUid)
-        .maybeSingle();
-
-      if (profileError) {
+      const selectedWeekendDates = getWeekendDates(weekendOffset);
+      const selectedWeekendDate = calendarDateValue(selectedWeekendDates.sat);
+      const availabilitySelect = ["tutor_uid", "weekend_date", ...AVAILABILITY_COLUMNS].join(", ");
+      const [
+        strikeStatusResult,
+        availabilityResult,
+        occupancyResult,
+      ] = await Promise.all([
+        refreshStrikeStatus(),
+        supabase
+          .from("tutor_availability")
+          .select(availabilitySelect)
+          .eq("tutor_uid", tutorUid)
+          .eq("weekend_date", selectedWeekendDate)
+          .maybeSingle(),
+        supabase.rpc(
+          "get_weekend_schedule_occupancy",
+          {
+            p_teacher_uid: tutorUid,
+            p_weekend_date: selectedWeekendDate,
+          }
+        ),
+      ]);
+      const { status, error: strikeStatusError } = strikeStatusResult;
+      if (strikeStatusError) {
         if (!cancelled) {
-          setError(profileError.message);
+          setError(strikeStatusError.message);
+          setLoading(false);
+        }
+        return;
+      }
+      if (!cancelled) setStrikeStatus(status);
+
+      if (availabilityResult.error) {
+        if (!cancelled) {
+          setError(availabilityResult.error.message);
           setLoading(false);
         }
         return;
       }
 
-      if (!profile) {
+      if (occupancyResult.error) {
         if (!cancelled) {
-          setError(t("common.noTutorProfile"));
+          setError(occupancyResult.error.message);
           setLoading(false);
         }
         return;
       }
 
-      const { availability: nextAvailability, unset } = profileToAvailability(profile as unknown as TutorProfileAvailability);
-      const currentWeekendDates = getWeekendDates(false);
-      const followingWeekendDates = getWeekendDates(true);
-      const currentWindow = weekendWindow(currentWeekendDates);
-      const followingWindow = weekendWindow(followingWeekendDates);
-      const { data: classRows, error: classesError } = await supabase
-        .from("classes")
-        .select("lesson_id, student_uid, teacher_uid, time, duration, student_wants_to_share, status")
-        .eq("teacher_uid", tutorUid)
-        .gte("time", currentWindow.start.toISOString())
-        .lt("time", (currentWeekendDates.afterTutorCutoff ? followingWindow.end : currentWindow.end).toISOString())
-        .or("status.is.null,status.neq.cancelled")
-        .order("time", { ascending: true });
-
-      if (classesError) {
-        if (!cancelled) {
-          setError(classesError.message);
-          setLoading(false);
-        }
-        return;
-      }
-
-      const allClasses = (classRows ?? []) as ClassRow[];
-      const hasUpcomingFollowingWeekendBooking = allClasses.some((cls) => {
-        const startsAt = new Date(cls.time);
-        const endsAt = new Date(startsAt.getTime() + cls.duration * 60000);
-        return classInWeekend(cls, followingWeekendDates) && endsAt > new Date();
-      });
-      const nextWeekendDates =
-        currentWeekendDates.afterTutorCutoff && (unset || hasUpcomingFollowingWeekendBooking)
-          ? followingWeekendDates
-          : currentWeekendDates;
-      const classes = allClasses.filter((cls) => classInWeekend(cls, nextWeekendDates));
-      const studentUids = Array.from(new Set(classes.map((cls) => cls.student_uid)));
+      const { availability: nextAvailability, unset } = rowToAvailability(
+        (availabilityResult.data as unknown as TutorAvailabilityRow | null) ?? null
+      );
+      const classes = (occupancyResult.data ?? []) as ScheduleOccupancyRow[];
+      const studentUids = Array.from(new Set(
+        classes.map((cls) => cls.student_uid).filter((uid): uid is string => Boolean(uid))
+      ));
       const studentNames = new Map<string, string>();
 
       if (studentUids.length > 0) {
@@ -525,19 +638,25 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
 
       const nextBookings: Record<string, Booking> = {};
       classes.forEach((cls) => {
-        const startsAt = new Date(cls.time);
-        const satStart = beijingSlotInstant(nextWeekendDates.sat, 0);
-        const sunStart = beijingSlotInstant(nextWeekendDates.sun, 0);
+        const startsAt = new Date(cls.slot_time);
+        const sunStart = beijingSlotInstant(selectedWeekendDates.sun, 0);
         const day: Day = startsAt < sunStart ? "sat" : "sun";
-        const dayDate = day === "sat" ? nextWeekendDates.sat : nextWeekendDates.sun;
+        const dayDate = day === "sat" ? selectedWeekendDates.sat : selectedWeekendDates.sun;
         const startIdx = slotIndexForInstant(dayDate, startsAt);
-        const endIdx = startIdx + cls.duration / 30;
-        const student = studentNames.get(cls.student_uid) ?? cls.student_uid;
+        const endIdx = startIdx + cls.slot_duration / 30;
+        const student = cls.student_uid
+          ? studentNames.get(cls.student_uid) ?? t("common.student")
+          : t("common.student");
         const booking: Booking = {
           student,
-          note: cls.student_wants_to_share?.trim() || "",
+          note: cls.student_note?.trim() || "",
           date: formatLocalSlotDate(dayDate, lang),
-          time: formatLocalInstantRange(startsAt, cls.duration, lang),
+          time: formatLocalInstantRange(startsAt, cls.slot_duration, lang),
+          startsAt: cls.slot_time,
+          duration: cls.slot_duration,
+          lessonId: cls.lesson_id,
+          recurringLessonId: cls.recurring_lesson_id,
+          virtual: cls.is_virtual,
         };
 
         for (let idx = startIdx; idx < endIdx; idx += 1) {
@@ -549,11 +668,13 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
 
       if (!cancelled) {
         setAvailability(nextAvailability);
-        setWeekendDates(nextWeekendDates);
         setAvailabilityUnset(unset);
         setBookings(nextBookings);
         setSaved(!unset);
         setDirty(false);
+        setSelectedBookingKey(null);
+        setPendingCancel(null);
+        setWeekendMarkedUnavailable(false);
         setLoading(false);
       }
     }
@@ -563,7 +684,7 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [weekendOffset, lang, t]);
 
   function toggleSlot(day: Day, slotIdx: number) {
     const key = slotKey(day, slotIdx);
@@ -588,24 +709,68 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
     setDirty(true);
   }
 
-  function confirmCancelBookedSlot() {
-    if (!pendingCancel || changesLocked) return;
-    const key = slotKey(pendingCancel.day, pendingCancel.slotIdx);
+  async function confirmCancelBookedSlot() {
+    if (!pendingCancel) return;
+    setError("");
 
+    const booking = pendingCancel.booking;
+    const { error: cancelError } = booking.recurringLessonId
+      ? await supabase.rpc("secure_cancel_recurring_occurrence", {
+          p_recurring_lesson_id: booking.recurringLessonId,
+          p_time: booking.startsAt,
+        })
+      : booking.lessonId
+        ? await supabase.rpc("secure_cancel_class", {
+            p_lesson_id: booking.lessonId,
+            p_series: false,
+          })
+        : { error: new Error("Class could not be identified") };
+
+    if (cancelError) {
+      setError(cancelError.message);
+      return;
+    }
+
+    void dispatchReminderEmails();
+    const { status } = await refreshStrikeStatus();
+    setStrikeStatus(status);
     setBookings((current) => {
-      const next = { ...current };
-      delete next[key];
-      return next;
+      return Object.fromEntries(
+        Object.entries(current).filter(([, item]) => item.startsAt !== booking.startsAt)
+      );
     });
+    const startIdx = slotIndexForInstant(
+      pendingCancel.day === "sat" ? weekendDates.sat : weekendDates.sun,
+      new Date(booking.startsAt)
+    );
+    const unavailableSlots = Array.from(
+      { length: booking.duration / 30 },
+      (_, offset) => startIdx + offset
+    );
     setAvailability((current) => ({
       ...current,
-      [pendingCancel.day]: current[pendingCancel.day].filter((item) => item !== pendingCancel.slotIdx),
+      [pendingCancel.day]: current[pendingCancel.day].filter(
+        (item) => !unavailableSlots.includes(item)
+      ),
     }));
-    if (selectedBookingKey === key) {
-      setSelectedBookingKey(null);
-    }
+    setSelectedBookingKey(null);
     setDirty(true);
     setPendingCancel(null);
+  }
+
+  function moveToWeekend(offset: number) {
+    if (dirty) {
+      setPendingWeekendOffset(offset);
+      return;
+    }
+    setWeekendOffset(offset);
+  }
+
+  function confirmWeekendChange() {
+    if (pendingWeekendOffset === null) return;
+    setDirty(false);
+    setPendingWeekendOffset(null);
+    setWeekendOffset(pendingWeekendOffset);
   }
 
   async function saveAvailability() {
@@ -623,6 +788,7 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
 
     const { error: updateError } = await supabase.rpc("secure_save_tutor_availability", {
       p_availability: availabilityToUpdate(availability),
+      p_weekend_date: calendarDateValue(weekendDates.sat),
     });
 
     if (updateError) {
@@ -638,28 +804,109 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
     setSaving(false);
   }
 
+  async function markWeekendUnavailable() {
+    setMarkingWeekendUnavailable(true);
+    setError("");
+    const { start, end } = fullWeekendWindow(weekendDates);
+    const { error: updateError } = await supabase.rpc("secure_mark_weekend_unavailable", {
+      p_weekend_start: start.toISOString(),
+      p_weekend_end: end.toISOString(),
+    });
+
+    if (updateError) {
+      console.error("secure_mark_weekend_unavailable failed", updateError);
+      setError(updateError.message);
+      setMarkingWeekendUnavailable(false);
+      return;
+    }
+
+    void dispatchReminderEmails();
+    const { status } = await refreshStrikeStatus();
+    setStrikeStatus(status);
+    setAvailability({ sat: [], sun: [] });
+    setBookings({});
+    setAvailabilityUnset(false);
+    setSaved(true);
+    setDirty(false);
+    setSelectedBookingKey(null);
+    setPendingCancel(null);
+    setWeekendDialogOpen(false);
+    setWeekendMarkedUnavailable(true);
+    setMarkingWeekendUnavailable(false);
+  }
+
   return (
     <>
       <div className="flex h-full min-h-0 flex-col gap-5 overflow-y-auto lg:flex-row lg:overflow-hidden">
         <div className="flex min-w-0 flex-1 flex-col gap-5 lg:overflow-y-auto lg:pr-1">
-          <div>
-            <h2 className="text-foreground">{t("schedule.setAvailability")}</h2>
-            <p className="text-sm text-muted-foreground mt-0.5">
-              {t("schedule.setAvailabilityHelp")}
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {t(weekendDates.afterTutorCutoff ? (availabilityUnset ? "schedule.tutorUnsetAfterCutoffNote" : "schedule.tutorCutoffActiveNote") : "schedule.timezoneNote")}
-            </p>
-            {currentTutorUid && (
-              <p className="mt-1 text-xs text-muted-foreground">
-                {t("common.tutorUid", { uid: currentTutorUid })}
+          <div className="flex flex-col items-start justify-between gap-4 sm:flex-row">
+            <div>
+              <h2 className="text-foreground">{t("schedule.setAvailability")}</h2>
+              <p className="mt-0.5 text-sm text-muted-foreground">
+                {t("schedule.chinaTimeRange")}
               </p>
-            )}
+              <p className="mt-1 text-sm font-medium text-card-foreground">
+                {t("schedule.tutorAvailabilityDeadline", { deadline: availabilityDeadline })}
+              </p>
+              {weekendOffset < 0 && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t("schedule.pastWeekendNote")}
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setWeekendDialogOpen(true)}
+              disabled={loading || markingWeekendUnavailable || weekendOffset < 0 || strikeStatus.isBanned}
+              className="w-full shrink-0 rounded-xl border border-destructive px-4 py-2.5 text-sm text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+            >
+              {t("schedule.markWeekendUnavailable", { dateRange: weekendDateRange })}
+            </button>
           </div>
+
+          <div className="grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center rounded-2xl border border-border bg-card p-2">
+            <button
+              type="button"
+              onClick={() => moveToWeekend(weekendOffset - 1)}
+              disabled={loading || saving}
+              aria-label={t("schedule.previousWeekend")}
+              className="flex h-10 w-10 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-muted hover:text-card-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <ChevronLeft size={20} />
+            </button>
+            <div className="min-w-0 text-center">
+              <p className="text-sm font-medium text-card-foreground">
+                {weekendOffset === 0 ? t("schedule.currentWeekend") : t("schedule.weekend")}
+              </p>
+              <p className="truncate text-xs text-muted-foreground">{weekendDateRange}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => moveToWeekend(weekendOffset + 1)}
+              disabled={loading || saving}
+              aria-label={t("schedule.nextWeekend")}
+              className="flex h-10 w-10 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-muted hover:text-card-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <ChevronRight size={20} />
+            </button>
+          </div>
+
+          {weekendMarkedUnavailable && (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+              {t("schedule.weekendMarkedUnavailable")}
+            </div>
+          )}
 
           {error && (
             <div className="rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">
               {error}
+            </div>
+          )}
+          {strikeStatus.isBanned && strikeStatus.bannedUntil && (
+            <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              {t("strikes.tutorAvailabilityBlockedUntil", {
+                date: new Date(strikeStatus.bannedUntil).toLocaleString(lang === "zh" ? "zh-CN" : "en-US"),
+              })}
             </div>
           )}
 
@@ -673,7 +920,13 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
             <div className="bg-card border border-border rounded-2xl p-5 flex items-center justify-between gap-4">
               <div>
                 <p className="text-card-foreground text-sm">{t("schedule.availabilityUnsetTitle")}</p>
-                <p className="text-sm text-muted-foreground mt-0.5">{t("schedule.availabilityUnsetHelp")}</p>
+                <p className="text-sm text-muted-foreground mt-0.5">
+                  {t(
+                    weekendOffset === 0 && weekendDates.afterTutorCutoff
+                      ? "schedule.tutorCutoffActiveNote"
+                      : "schedule.availabilityUnsetHelp"
+                  )}
+                </p>
               </div>
               <CalendarDays size={28} className="text-primary shrink-0" />
             </div>
@@ -706,8 +959,8 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
             </div>
             <button
               onClick={saveAvailability}
-              disabled={!hasAvailability || saving || loading || changesLocked}
-              className="rounded-xl bg-primary px-5 py-2.5 text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={saving || loading || changesLocked}
+              className="w-full rounded-xl bg-primary px-5 py-2.5 text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
             >
               {saving ? t("common.saving") : saved && !dirty ? t("common.availabilitySaved") : t("common.saveAvailability")}
             </button>
@@ -735,7 +988,7 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
 
         <div
           className={`shrink-0 bg-card border border-border rounded-2xl overflow-hidden transition-all duration-300 ${
-            selectedBooking ? "min-h-[24rem] w-full opacity-100 lg:min-h-0 lg:w-80" : "h-0 w-full opacity-0 border-transparent lg:h-auto lg:w-0"
+            selectedBooking ? "max-h-[calc(100vh-2rem)] min-h-0 w-full opacity-100 overflow-y-auto lg:max-h-none lg:w-80" : "h-0 w-full opacity-0 border-transparent lg:h-auto lg:w-0"
           }`}
         >
           {selectedBooking && (
@@ -744,11 +997,9 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
               onClose={() => setSelectedBookingKey(null)}
               onCancelClass={() => {
                 const [day, slot] = selectedBookingKey!.split("-") as [Day, string];
-                if (!changesLocked) {
-                  setPendingCancel({ day, slotIdx: Number(slot), booking: selectedBooking });
-                }
+                setPendingCancel({ day, slotIdx: Number(slot), booking: selectedBooking });
               }}
-              locked={changesLocked}
+              locked={new Date(selectedBooking.startsAt) <= new Date()}
               lang={lang}
             />
           )}
@@ -759,6 +1010,19 @@ export function TutorSchedulePage({ lang }: { lang: string }) {
         booking={pendingCancel?.booking ?? null}
         onCancel={() => setPendingCancel(null)}
         onConfirm={confirmCancelBookedSlot}
+      />
+      <WeekendUnavailableDialog
+        open={weekendDialogOpen}
+        dateRange={weekendDateRange}
+        showStrikeWarning={weekendOffset === 0 && weekendDates.afterTutorCutoff && Object.keys(bookings).length > 0}
+        saving={markingWeekendUnavailable}
+        onCancel={() => setWeekendDialogOpen(false)}
+        onConfirm={markWeekendUnavailable}
+      />
+      <UnsavedWeekendDialog
+        open={pendingWeekendOffset !== null}
+        onCancel={() => setPendingWeekendOffset(null)}
+        onConfirm={confirmWeekendChange}
       />
     </>
   );

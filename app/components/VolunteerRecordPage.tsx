@@ -78,7 +78,6 @@ export function VolunteerRecordPage({ lang }: { lang: string }) {
   const [taskName, setTaskName] = useState("");
   const [hours, setHours] = useState("");
   const [minutes, setMinutes] = useState("");
-  const [currentTutorUid, setCurrentTutorUid] = useState("");
 
   async function getTutorUid() {
     const { data } = await supabase.auth.getUser();
@@ -93,9 +92,6 @@ export function VolunteerRecordPage({ lang }: { lang: string }) {
       setError("");
 
       const tutorUid = await getTutorUid();
-      if (!cancelled) {
-        setCurrentTutorUid(tutorUid ?? "");
-      }
       if (!tutorUid) {
         if (!cancelled) {
           setEntries([]);
@@ -180,11 +176,6 @@ export function VolunteerRecordPage({ lang }: { lang: string }) {
           <p className="text-sm text-muted-foreground mt-0.5">
             {t("volunteer.help")}
           </p>
-          {currentTutorUid && (
-            <p className="mt-1 text-xs text-muted-foreground">
-              {t("common.tutorUid", { uid: currentTutorUid })}
-            </p>
-          )}
         </div>
 
         <Dialog.Root open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -196,7 +187,7 @@ export function VolunteerRecordPage({ lang }: { lang: string }) {
           </Dialog.Trigger>
           <Dialog.Portal>
             <Dialog.Overlay className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50" />
-            <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-card p-5 shadow-xl">
+            <Dialog.Content className="fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-border bg-card p-5 shadow-xl">
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <Dialog.Title className="text-card-foreground">

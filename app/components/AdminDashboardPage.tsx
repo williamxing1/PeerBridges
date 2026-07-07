@@ -165,6 +165,43 @@ function StatBox({
   );
 }
 
+function PeopleListCard({
+  title,
+  people,
+  loading,
+}: {
+  title: string;
+  people: PersonOption[];
+  loading: boolean;
+}) {
+  const { t } = useLanguage();
+  return (
+    <div className="rounded-2xl border border-border bg-card p-5">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-card-foreground">{title}</h3>
+        <span className="rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">
+          {loading ? "..." : people.length}
+        </span>
+      </div>
+      <div className="mt-4 max-h-72 overflow-y-auto rounded-xl border border-border bg-background">
+        {loading ? (
+          <p className="px-4 py-3 text-sm text-muted-foreground">{t("common.loading")}</p>
+        ) : people.length === 0 ? (
+          <p className="px-4 py-3 text-sm text-muted-foreground">{t("common.none")}</p>
+        ) : (
+          <ul className="divide-y divide-border">
+            {people.map((person) => (
+              <li key={person.uid} className="px-4 py-3 text-sm text-card-foreground">
+                {person.name}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function CalendarInput({
   label,
   value,
@@ -391,8 +428,12 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
   const now = new Date();
   const studentProfiles = profiles.filter((profile) => studentUids.includes(profile.uid));
   const tutorProfiles = profiles.filter((profile) => tutorUids.includes(profile.uid));
-  const studentOptions = studentProfiles.map(({ uid, name }) => ({ uid, name }));
-  const tutorOptions = tutorProfiles.map(({ uid, name }) => ({ uid, name }));
+  const studentOptions = studentProfiles
+    .map(({ uid, name }) => ({ uid, name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const tutorOptions = tutorProfiles
+    .map(({ uid, name }) => ({ uid, name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
   const selectedOptions = personType === "student" ? studentOptions : tutorOptions;
   const completedClasses = classes.filter((cls) => classEndsAt(cls) <= now);
   const allTimeVolunteerMinutes = volunteerRecords.reduce((total, record) => total + record.minutes, 0);
@@ -408,7 +449,7 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
     .map((uid) => ({ uid, name: profileName.get(uid) ?? uid }));
   const missingTutors = tutorUids
     .filter((uid) => !periodTutorUids.includes(uid))
-    .map((uid) => ({ uid, name: profileName.get(uid) ?? uid }));
+    .map((uid) => ({ uid, name: profileName.get(uid) ?? t("common.tutor") }));
   const studentGrowth = useMemo(() => growthPoints(startDate, endDate, studentProfiles, lang), [startDate, endDate, studentProfiles, lang]);
   const tutorGrowth = useMemo(() => growthPoints(startDate, endDate, tutorProfiles, lang), [startDate, endDate, tutorProfiles, lang]);
   const personClasses = selectedPerson
@@ -505,6 +546,11 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
           <StatBox label={t("admin.completedClassCount")} value={loading ? "..." : String(completedClasses.length)} icon={BookOpen} />
           <StatBox label={t("admin.volunteerHoursCount")} value={loading ? "..." : hoursLabel(allTimeVolunteerMinutes)} icon={Clock} />
         </div>
+      </section>
+
+      <section className="grid gap-4 lg:grid-cols-2">
+        <PeopleListCard title={t("admin.allStudents")} people={studentOptions} loading={loading} />
+        <PeopleListCard title={t("admin.allTutors")} people={tutorOptions} loading={loading} />
       </section>
 
       <section className="rounded-2xl border border-border bg-card p-5">

@@ -7,14 +7,59 @@ import { useLanguage } from "../i18n";
 
 type ContactRole = "student" | "tutor" | "admin";
 type ContactMode = "wechat" | "email";
+type ContactWho = "student" | "parent" | "administrator";
 
 type Contact = {
   uid: string;
   role: ContactRole;
   name: string;
-  email: string;
-  wechat_id: string;
+  student_wechat_id: string | null;
+  parent_wechat_id: string | null;
+  student_email: string | null;
+  parent_email: string | null;
+  preferred_communication: ContactMode | null;
 };
+
+type ContactEntry = {
+  key: string;
+  uid: string;
+  role: ContactRole;
+  name: string;
+  who: ContactWho;
+  value: string;
+  isPrimary: boolean;
+};
+
+function contactEntries(contact: Contact, mode: ContactMode): ContactEntry[] {
+  const entries: ContactEntry[] = [];
+  const studentValue = mode === "wechat" ? contact.student_wechat_id : contact.student_email;
+  const parentValue = mode === "wechat" ? contact.parent_wechat_id : contact.parent_email;
+
+  if (studentValue?.trim()) {
+    entries.push({
+      key: `${contact.uid}:${mode}:student`,
+      uid: contact.uid,
+      role: contact.role,
+      name: contact.name,
+      who: contact.role === "admin" ? "administrator" : "student",
+      value: studentValue.trim(),
+      isPrimary: contact.role === "admin" || contact.preferred_communication === mode,
+    });
+  }
+  if (contact.role !== "admin" && parentValue?.trim()) {
+    entries.push({
+      key: `${contact.uid}:${mode}:parent`,
+      uid: contact.uid,
+      role: contact.role,
+      name: contact.name,
+      who: "parent",
+      value: parentValue.trim(),
+      isPrimary: contact.preferred_communication === mode,
+    });
+  }
+
+  return entries;
+}
 
 export function CommunicationsPage({
   viewerRole,
@@ -24,7 +69,7 @@ export function CommunicationsPage({
   const { t } = useLanguage();
   const [mode, setMode] = useState<ContactMode>("wechat");
   const [contacts, setContacts] = useState<Contact[]>([]);
-  const [selectedUids, setSelectedUids] = useState<string[]>([]);
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [roleFilter, setRoleFilter] = useState<ContactRole | "all">("all");
   const [loading, setLoading] = useState(true);
@@ -49,6 +94,17 @@ export function CommunicationsPage({
     tutor: t("common.teacher"),
     admin: t("communications.administrator"),
   };
+  function contactTypeLabel(entry: ContactEntry) {
+    if (entry.role === "admin") return t("communications.administrator");
+    if (entry.role === "tutor") {
+      return entry.who === "parent"
+        ? t("communications.teacherParentContact")
+        : t("common.teacher");
+    }
+    return entry.who === "parent"
+      ? t("communications.studentParentContact")
+      : t("communications.studentContact");
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -74,7 +130,7 @@ export function CommunicationsPage({
             .filter((contact) => allowedRoles.includes(contact.role))
             .sort((a, b) => a.role.localeCompare(b.role) || a.name.localeCompare(b.name)),
         );
-        setSelectedUids([]);
+        setSelectedKeys([]);
         setLoading(false);
       }
     }
@@ -86,29 +142,30 @@ export function CommunicationsPage({
     };
   }, [allowedRoles]);
 
-  const selectedContacts = contacts.filter((contact) => selectedUids.includes(contact.uid));
-  const selectedValues = selectedContacts.map((contact) => (mode === "wechat" ? contact.wechat_id : contact.email));
-  const mailtoHref = `mailto:${selectedContacts.map((contact) => contact.email).join(",")}`;
+  const entries = contacts.flatMap((contact) => contactEntries(contact, mode));
+  const selectedEntries = entries.filter((entry) => selectedKeys.includes(entry.key));
+  const selectedValues = selectedEntries.map((entry) => entry.value);
+  const mailtoHref = `mailto:${selectedEntries.map((entry) => entry.value).join(",")}`;
   const normalizedQuery = query.trim().toLowerCase();
-  const filteredContacts = contacts.filter((contact) => {
-    const matchesRole = roleFilter === "all" || contact.role === roleFilter;
+  const filteredEntries = entries.filter((entry) => {
+    const matchesRole = roleFilter === "all" || entry.role === roleFilter;
     const matchesQuery =
       normalizedQuery.length === 0 ||
-      contact.name.toLowerCase().includes(normalizedQuery) ||
-      contact.email.toLowerCase().includes(normalizedQuery) ||
-      contact.wechat_id.toLowerCase().includes(normalizedQuery);
+      entry.name.toLowerCase().includes(normalizedQuery) ||
+      entry.value.toLowerCase().includes(normalizedQuery) ||
+      contactTypeLabel(entry).toLowerCase().includes(normalizedQuery);
 
     return matchesRole && matchesQuery;
   });
 
-  function toggleContact(uid: string) {
-    setSelectedUids((current) =>
-      current.includes(uid) ? current.filter((selectedUid) => selectedUid !== uid) : [...current, uid]
+  function toggleContact(key: string) {
+    setSelectedKeys((current) =>
+      current.includes(key) ? current.filter((selectedKey) => selectedKey !== key) : [...current, key]
     );
   }
 
   function selectRole(role: ContactRole) {
-    setSelectedUids(contacts.filter((contact) => contact.role === role).map((contact) => contact.uid));
+    setSelectedKeys(entries.filter((entry) => entry.role === role).map((entry) => entry.key));
   }
 
   return (
@@ -117,12 +174,18 @@ export function CommunicationsPage({
         <div>
           <h2 className="text-foreground">{t("communications.title")}</h2>
           <p className="mt-0.5 text-sm text-muted-foreground">{t(helpKey)}</p>
+          <p className="mt-2 text-sm font-medium text-card-foreground">
+            {t("communications.preferredMethodNote")}
+          </p>
         </div>
 
         <div className="inline-flex rounded-xl border border-border bg-card p-1">
           <button
             type="button"
-            onClick={() => setMode("wechat")}
+            onClick={() => {
+              setMode("wechat");
+              setSelectedKeys([]);
+            }}
             className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors ${
               mode === "wechat" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"
             }`}
@@ -132,7 +195,10 @@ export function CommunicationsPage({
           </button>
           <button
             type="button"
-            onClick={() => setMode("email")}
+            onClick={() => {
+              setMode("email");
+              setSelectedKeys([]);
+            }}
             className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors ${
               mode === "email" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"
             }`}
@@ -157,7 +223,7 @@ export function CommunicationsPage({
                 {isAdmin ? t("communications.selectContacts") : t("communications.selectContact")}
               </h3>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                {selectedUids.length} {t("common.selected")}
+                {selectedKeys.length} {t("common.selected")}
               </p>
             </div>
 
@@ -179,7 +245,7 @@ export function CommunicationsPage({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setSelectedUids([])}
+                  onClick={() => setSelectedKeys([])}
                   className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent"
                 >
                   {t("communications.clearSelection")}
@@ -221,12 +287,12 @@ export function CommunicationsPage({
             <div className="rounded-xl border border-dashed border-border bg-background px-4 py-10 text-center text-sm text-muted-foreground">
               {t("communications.loading")}
             </div>
-          ) : contacts.length === 0 ? (
+          ) : entries.length === 0 ? (
             <div className="flex min-h-60 flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border bg-background px-4 py-10 text-center text-sm text-muted-foreground">
               <Users size={28} className="opacity-40" />
               {t("communications.empty")}
             </div>
-          ) : filteredContacts.length === 0 ? (
+          ) : filteredEntries.length === 0 ? (
             <div className="flex min-h-60 flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border bg-background px-4 py-10 text-center text-sm text-muted-foreground">
               <Users size={28} className="opacity-40" />
               {t("communications.noMatches")}
@@ -234,22 +300,23 @@ export function CommunicationsPage({
           ) : (
             <div className="min-h-0 overflow-hidden rounded-xl border border-border">
               <div className="min-w-0">
-                <div className="hidden grid-cols-[2.2rem_minmax(8rem,1fr)_7rem_minmax(11rem,1.2fr)] gap-3 border-b border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground md:grid">
+                <div className="hidden grid-cols-[2.2rem_minmax(7rem,1fr)_8.5rem_minmax(9rem,1.1fr)_5.5rem] gap-3 border-b border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground md:grid">
                   <span />
                   <span>{t("common.name")}</span>
                   <span>{t("common.type")}</span>
                   <span>{mode === "wechat" ? t("auth.wechatId") : t("auth.email")}</span>
+                  <span>{t("communications.isPrimary")}</span>
                 </div>
                 <div className="max-h-[26rem] overflow-y-auto">
-                {filteredContacts.map((contact) => {
-                  const selected = selectedUids.includes(contact.uid);
+                {filteredEntries.map((entry) => {
+                  const selected = selectedKeys.includes(entry.key);
 
                   return (
                     <button
-                      key={contact.uid}
+                      key={entry.key}
                       type="button"
-                      onClick={() => toggleContact(contact.uid)}
-                      className={`grid w-full grid-cols-[2.2rem_minmax(0,1fr)] items-center gap-3 border-b border-border px-3 py-3 text-left text-sm transition-colors last:border-b-0 md:grid-cols-[2.2rem_minmax(8rem,1fr)_7rem_minmax(11rem,1.2fr)] md:py-2.5 ${
+                      onClick={() => toggleContact(entry.key)}
+                      className={`grid w-full grid-cols-[2.2rem_minmax(0,1fr)] items-center gap-3 border-b border-border px-3 py-3 text-left text-sm transition-colors last:border-b-0 md:grid-cols-[2.2rem_minmax(7rem,1fr)_8.5rem_minmax(9rem,1.1fr)_5.5rem] md:py-2.5 ${
                         selected
                           ? "bg-primary/10"
                           : "bg-background hover:bg-accent"
@@ -263,14 +330,17 @@ export function CommunicationsPage({
                         {selected && <span className="h-2 w-2 rounded-full bg-primary-foreground" />}
                       </span>
                       <span className="min-w-0">
-                        <span className="block truncate text-card-foreground">{contact.name}</span>
+                        <span className="block truncate text-card-foreground">{entry.name}</span>
                         <span className="mt-0.5 block truncate text-xs text-muted-foreground md:hidden">
-                          {roleLabels[contact.role]} · {mode === "wechat" ? contact.wechat_id : contact.email}
+                          {contactTypeLabel(entry)} · {entry.value} · {entry.isPrimary ? t("communications.preferred") : t("communications.notPreferred")}
                         </span>
                       </span>
-                      <span className="hidden truncate text-xs text-muted-foreground md:block">{roleLabels[contact.role]}</span>
+                      <span className="hidden truncate text-xs text-muted-foreground md:block">{contactTypeLabel(entry)}</span>
                       <span className="hidden truncate text-xs text-muted-foreground md:block">
-                        {mode === "wechat" ? contact.wechat_id : contact.email}
+                        {entry.value}
+                      </span>
+                      <span className={`hidden truncate text-xs md:block ${entry.isPrimary ? "font-medium text-emerald-700" : "text-muted-foreground"}`}>
+                        {entry.isPrimary ? t("communications.yes") : t("communications.no")}
                       </span>
                     </button>
                   );
@@ -288,14 +358,14 @@ export function CommunicationsPage({
                 {mode === "wechat" ? t("communications.selectedWechatIds") : t("communications.selectedEmails")}
               </h3>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                {selectedUids.length} {t("common.selected")}
+                {selectedKeys.length} {t("common.selected")}
               </p>
             </div>
             {mode === "email" && (
               <a
                 href={mailtoHref}
                 className={`inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs transition-colors sm:shrink-0 ${
-                  selectedContacts.length > 0
+                  selectedEntries.length > 0
                     ? "bg-primary text-primary-foreground hover:bg-primary/90"
                     : "pointer-events-none bg-muted text-muted-foreground"
                 }`}
@@ -312,11 +382,18 @@ export function CommunicationsPage({
             </div>
           ) : (
             <div className="flex max-h-[30rem] flex-col gap-2 overflow-y-auto">
-              {selectedContacts.map((contact) => (
-                <div key={contact.uid} className="rounded-xl border border-border bg-background p-3">
-                  <p className="text-xs text-muted-foreground">{contact.name}</p>
+              {selectedEntries.map((entry) => (
+                <div key={entry.key} className="rounded-xl border border-border bg-background p-3">
+                  <p className="text-xs text-muted-foreground">
+                    {entry.name} · {contactTypeLabel(entry)}
+                  </p>
                   <p className="mt-1 break-all text-sm text-card-foreground">
-                    {mode === "wechat" ? contact.wechat_id : contact.email}
+                    {mode === "wechat"
+                      ? t("communications.wechatIdValue", { value: entry.value })
+                      : entry.value}
+                  </p>
+                  <p className={`mt-1 text-xs ${entry.isPrimary ? "font-medium text-emerald-700" : "text-muted-foreground"}`}>
+                    {entry.isPrimary ? t("communications.preferred") : t("communications.notPreferred")}
                   </p>
                 </div>
               ))}

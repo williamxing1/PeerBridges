@@ -4,20 +4,21 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import * as Select from "@radix-ui/react-select";
-import { BookOpen, Check, ChevronDown } from "lucide-react";
+import { BookOpen, Check, ChevronDown, Eye, EyeOff } from "lucide-react";
 import { supabase } from "../lib/supabase/client";
-import { GradesToTutorMultiSelect } from "./components/GradesToTutorMultiSelect";
 import { countryOptionsForLang } from "./data/countries";
-import { safeExternalUrl } from "./lib/security";
+import { isValidMeetingPassword, normalizeVoovMeetingUrl } from "./lib/tutorMeeting";
 import { LanguageSelect, optionLabel, useLanguage, type Lang, type TranslationKey } from "./i18n";
 
 type Mode = "login" | "register";
 type Role = "student" | "tutor" | "administrator";
+type CommunicationRecipient = "student" | "parent" | "both";
+type PreferredCommunication = "wechat" | "email";
+type NotificationMethod = "wechat" | "email" | "phone";
 type PendingRegistration = {
   role: "student" | "tutor";
   name: string;
   email: string;
-  wechatId: string;
   details: Record<string, string>;
 };
 type StoredUser = {
@@ -25,20 +26,18 @@ type StoredUser = {
   role: Role | "admin";
   name: string;
   email: string;
-  wechatId?: string;
   country?: string;
   grade?: string;
-  englishLevel?: string;
   referrer?: string;
   trialTeacher?: string;
   school?: string;
-  gradesToTutor?: string;
   classLink?: string;
   classPassword?: string;
   howFoundOut?: string;
 };
 
 const storedUserKey = "tutorflow-user";
+const savedLoginCredentialsKey = "peerbridges-saved-login";
 
 const roleOptions: Array<{ id: Role; labelKey: TranslationKey }> = [
   { id: "student", labelKey: "role.student" },
@@ -50,7 +49,6 @@ const registerRoleOptions = roleOptions.filter((option) => option.id !== "admini
 
 const teachers = ["杨老师"];
 const gradeOptions = ["Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6", "Grade 7", "Grade 8", "Grade 9", "Grade 10", "Grade 11", "Grade 12"];
-const englishLevels = ["Beginner", "Intermediate", "Advanced"];
 
 function isAlreadyRegisteredError(message: string) {
   const normalized = message.toLowerCase();
@@ -68,7 +66,6 @@ function isPendingRegistration(value: unknown): value is PendingRegistration {
     (registration.role === "student" || registration.role === "tutor") &&
     typeof registration.name === "string" &&
     typeof registration.email === "string" &&
-    typeof registration.wechatId === "string" &&
     Boolean(registration.details) &&
     typeof registration.details === "object"
   );
@@ -79,6 +76,10 @@ function Field({
   type = "text",
   placeholder,
   minLength,
+  maxLength,
+  inputMode,
+  pattern,
+  required = true,
   value,
   onChange,
 }: {
@@ -86,21 +87,73 @@ function Field({
   type?: string;
   placeholder?: string;
   minLength?: number;
+  maxLength?: number;
+  inputMode?: "email" | "numeric" | "search" | "tel" | "text" | "url";
+  pattern?: string;
+  required?: boolean;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const { t } = useLanguage();
+  const [passwordVisible, setPasswordVisible] = useState(false);
+  const isPassword = type === "password";
+
+  return (
+    <label className="block">
+      <span className="text-sm font-medium text-card-foreground">{label}</span>
+      <span className="relative mt-2 block">
+        <input
+          required={required}
+          type={isPassword && passwordVisible ? "text" : type}
+          placeholder={placeholder}
+          minLength={minLength}
+          maxLength={maxLength}
+          inputMode={inputMode}
+          pattern={pattern}
+          className={`h-11 w-full rounded-xl border border-border bg-background px-3.5 text-sm text-foreground outline-none transition placeholder:text-muted-foreground/70 focus:border-primary/40 focus:bg-card ${isPassword ? "pr-11" : ""}`}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        />
+        {isPassword && (
+          <button
+            type="button"
+            onClick={() => setPasswordVisible((visible) => !visible)}
+            aria-label={t(passwordVisible ? "common.hidePassword" : "common.showPassword")}
+            className="absolute inset-y-0 right-0 flex w-11 items-center justify-center text-muted-foreground transition-colors hover:text-card-foreground"
+          >
+            {passwordVisible ? <EyeOff size={18} /> : <Eye size={18} />}
+          </button>
+        )}
+      </span>
+    </label>
+  );
+}
+
+function TextAreaField({
+  label,
+  placeholder,
+  value,
+  onChange,
+}: {
+  label: string;
+  placeholder: string;
   value: string;
   onChange: (value: string) => void;
 }) {
   return (
-    <label className="block">
+    <label className="block md:col-span-2">
       <span className="text-sm font-medium text-card-foreground">{label}</span>
-      <input
-        required
-        type={type}
+      <textarea
+        rows={5}
+        maxLength={1000}
         placeholder={placeholder}
-        minLength={minLength}
-        className="mt-2 h-11 w-full rounded-xl border border-border bg-background px-3.5 text-sm text-foreground outline-none transition placeholder:text-muted-foreground/70 focus:border-primary/40 focus:bg-card"
+        className="mt-2 w-full resize-y rounded-xl border border-border bg-background px-3.5 py-3 text-sm text-foreground outline-none transition placeholder:text-muted-foreground/70 focus:border-primary/40 focus:bg-card"
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(event) => onChange(event.target.value)}
       />
+      <span className="mt-1 block text-right text-xs text-muted-foreground">
+        {value.length} / 1000
+      </span>
     </label>
   );
 }
@@ -111,6 +164,7 @@ function SelectField({
   options,
   value,
   onChange,
+  required = true,
   getOptionLabel = (option) => option,
 }: {
   label: string;
@@ -118,12 +172,13 @@ function SelectField({
   options: string[];
   value: string;
   onChange: (value: string) => void;
+  required?: boolean;
   getOptionLabel?: (option: string) => string;
 }) {
   return (
     <label className="block">
       <span className="text-sm font-medium text-card-foreground">{label}</span>
-      <Select.Root required value={value} onValueChange={onChange}>
+      <Select.Root required={required} value={value} onValueChange={onChange}>
         <Select.Trigger className="mt-2 flex h-11 w-full items-center justify-between rounded-xl border border-border bg-background px-3.5 text-sm text-foreground outline-none transition data-[placeholder]:text-muted-foreground focus:border-primary/40 focus:bg-card">
           <Select.Value placeholder={placeholder} />
           <Select.Icon>
@@ -235,38 +290,52 @@ type LoginFieldsProps = {
   setEmail: (value: string) => void;
   password: string;
   setPassword: (value: string) => void;
+  saveCredentials?: boolean;
+  setSaveCredentials?: (value: boolean) => void;
 };
 
 type RegisterFieldsProps = LoginFieldsProps & {
   role: Role;
   name: string;
   setName: (value: string) => void;
-  wechatId: string;
-  setWechatId: (value: string) => void;
+  communicationRecipient: CommunicationRecipient | "";
+  setCommunicationRecipient: (value: CommunicationRecipient) => void;
+  studentWechatId: string;
+  setStudentWechatId: (value: string) => void;
+  parentWechatId: string;
+  setParentWechatId: (value: string) => void;
+  studentCommunicationEmail: string;
+  setStudentCommunicationEmail: (value: string) => void;
+  parentCommunicationEmail: string;
+  setParentCommunicationEmail: (value: string) => void;
+  preferredCommunication: PreferredCommunication | "";
+  setPreferredCommunication: (value: PreferredCommunication) => void;
+  notificationMethod: NotificationMethod | "";
+  setNotificationMethod: (value: NotificationMethod) => void;
   country: string;
   setCountry: (value: string) => void;
   countryOptions: Array<{ value: string; label: string }>;
   grade: string;
   setGrade: (value: string) => void;
-  englishLevel: string;
-  setEnglishLevel: (value: string) => void;
   referrer: string;
   setReferrer: (value: string) => void;
   trialTeacher: string;
   setTrialTeacher: (value: string) => void;
+  studentIntroduction: string;
+  setStudentIntroduction: (value: string) => void;
   school: string;
   setSchool: (value: string) => void;
-  gradesToTutor: string;
-  setGradesToTutor: (value: string) => void;
   classLink: string;
   setClassLink: (value: string) => void;
   classPassword: string;
   setClassPassword: (value: string) => void;
   howFoundOut: string;
   setHowFoundOut: (value: string) => void;
+  tutorIntroduction: string;
+  setTutorIntroduction: (value: string) => void;
 };
 
-function LoginFields({ t, email, setEmail, password, setPassword }: LoginFieldsProps) {
+function LoginFields({ t, email, setEmail, password, setPassword, saveCredentials = false, setSaveCredentials }: LoginFieldsProps) {
   return (
     <div className="grid gap-4">
       <Field label={t("auth.email")} type="email" placeholder={t("auth.emailPlaceholder")} value={email} onChange={setEmail} />
@@ -279,6 +348,17 @@ function LoginFields({ t, email, setEmail, password, setPassword }: LoginFieldsP
           {t("auth.forgotPassword")}
         </Link>
       </div>
+      {setSaveCredentials && (
+        <label className="flex w-fit cursor-pointer items-center gap-2 text-sm text-card-foreground">
+          <input
+            type="checkbox"
+            checked={saveCredentials}
+            onChange={(event) => setSaveCredentials(event.target.checked)}
+            className="h-4 w-4 rounded border-border accent-primary"
+          />
+          <span>{t("auth.saveLoginCredentials")}</span>
+        </label>
+      )}
     </div>
   );
 }
@@ -291,33 +371,101 @@ function RegisterFields({
   setEmail,
   password,
   setPassword,
-  wechatId,
-  setWechatId,
+  communicationRecipient,
+  setCommunicationRecipient,
+  studentWechatId,
+  setStudentWechatId,
+  parentWechatId,
+  setParentWechatId,
+  studentCommunicationEmail,
+  setStudentCommunicationEmail,
+  parentCommunicationEmail,
+  setParentCommunicationEmail,
+  preferredCommunication,
+  setPreferredCommunication,
+  notificationMethod,
+  setNotificationMethod,
   country,
   setCountry,
   countryOptions,
   grade,
   setGrade,
-  englishLevel,
-  setEnglishLevel,
   referrer,
   setReferrer,
   trialTeacher,
   setTrialTeacher,
+  studentIntroduction,
+  setStudentIntroduction,
   school,
   setSchool,
-  gradesToTutor,
-  setGradesToTutor,
   classLink,
   setClassLink,
   classPassword,
   setClassPassword,
   howFoundOut,
   setHowFoundOut,
+  tutorIntroduction,
+  setTutorIntroduction,
   lang,
   t,
 }: RegisterFieldsProps) {
   const labelOption = (option: string) => optionLabel(option, lang);
+  const showStudentContact = communicationRecipient === "student" || communicationRecipient === "both";
+  const showParentContact = communicationRecipient === "parent" || communicationRecipient === "both";
+  const communicationFields = (
+    <section className="grid gap-4 rounded-xl border border-border bg-muted/30 p-4 md:col-span-2 md:grid-cols-2">
+      <div className="md:col-span-2">
+        <h3 className="text-sm font-medium text-card-foreground">{t("auth.communicationSection")}</h3>
+      </div>
+      <div className="md:col-span-2">
+        <SelectField
+          label={t("auth.communicationRecipient")}
+          placeholder={t("auth.selectCommunicationRecipient")}
+          options={["student", "parent", "both"]}
+          value={communicationRecipient}
+          onChange={(value) => setCommunicationRecipient(value as CommunicationRecipient)}
+          getOptionLabel={(option) =>
+            option === "student" && role === "tutor"
+              ? t("auth.communicationRecipient.tutor")
+              : t(`auth.communicationRecipient.${option}` as TranslationKey)
+          }
+        />
+      </div>
+      {showStudentContact && (
+        <>
+          <Field label={t(role === "tutor" ? "auth.tutorWechatId" : "auth.studentWechatId")} value={studentWechatId} onChange={setStudentWechatId} />
+          <Field label={t(role === "tutor" ? "auth.tutorCommunicationEmail" : "auth.studentCommunicationEmail")} type="email" value={studentCommunicationEmail} onChange={setStudentCommunicationEmail} />
+        </>
+      )}
+      {showParentContact && (
+        <>
+          <Field label={t("auth.parentWechatId")} value={parentWechatId} onChange={setParentWechatId} />
+          <Field label={t("auth.parentCommunicationEmail")} type="email" value={parentCommunicationEmail} onChange={setParentCommunicationEmail} />
+        </>
+      )}
+      <SelectField
+        label={t("auth.preferredCommunication")}
+        placeholder={t("auth.selectPreferredCommunication")}
+        options={["wechat", "email"]}
+        value={preferredCommunication}
+        onChange={(value) => setPreferredCommunication(value as PreferredCommunication)}
+        getOptionLabel={(option) => t(`auth.preferredCommunication.${option}` as TranslationKey)}
+      />
+      <SelectField
+        label={t("auth.notificationMethod")}
+        placeholder={t("auth.selectNotificationMethod")}
+        options={["wechat", "email", "phone"]}
+        value={notificationMethod}
+        onChange={(value) => setNotificationMethod(value as NotificationMethod)}
+        getOptionLabel={(option) => t(`auth.notificationMethod.${option}` as TranslationKey)}
+      />
+      {notificationMethod === "phone" && (
+        <p className="rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-3 text-sm text-amber-900 md:col-span-2">
+          {t("auth.phoneNotificationWarning")}
+        </p>
+      )}
+    </section>
+  );
 
   if (role === "student") {
     return (
@@ -325,12 +473,17 @@ function RegisterFields({
         <Field label={t("auth.name")} placeholder={t("auth.studentName")} value={name} onChange={setName} />
         <Field label={t("auth.email")} type="email" placeholder={t("auth.studentEmailPlaceholder")} value={email} onChange={setEmail} />
         <Field label={t("auth.password")} type="password" placeholder={t("auth.createPassword")} minLength={6} value={password} onChange={setPassword} />
-        <Field label={t("auth.wechatId")} placeholder={t("auth.wechatId")} value={wechatId} onChange={setWechatId} />
         <CountrySelect label={t("auth.country")} placeholder={t("auth.countryPlaceholder")} options={countryOptions} value={country} onChange={setCountry} />
         <SelectField label={t("auth.grade")} placeholder={t("auth.selectGrade")} options={gradeOptions} value={grade} onChange={setGrade} getOptionLabel={labelOption} />
-        <SelectField label={t("auth.englishLevel")} placeholder={t("auth.selectLevel")} options={englishLevels} value={englishLevel} onChange={setEnglishLevel} getOptionLabel={labelOption} />
-        <Field label={t("auth.referrer")} placeholder={t("auth.referrerPlaceholder")} value={referrer} onChange={setReferrer} />
-        <SelectField label={t("auth.trialTeacher")} placeholder={t("auth.selectRecruitingTeacher")} options={teachers} value={trialTeacher} onChange={setTrialTeacher} />
+        <Field label={`${t("auth.referrer")} (${t("common.optional")})`} placeholder={t("auth.referrerPlaceholder")} required={false} value={referrer} onChange={setReferrer} />
+        <SelectField label={`${t("auth.trialTeacher")} (${t("common.optional")})`} placeholder={t("auth.selectRecruitingTeacher")} options={teachers} required={false} value={trialTeacher} onChange={setTrialTeacher} />
+        <TextAreaField
+          label={`${t("auth.studentIntroduction")} (${t("common.optional")})`}
+          placeholder={t("auth.studentIntroductionPlaceholder")}
+          value={studentIntroduction}
+          onChange={setStudentIntroduction}
+        />
+        {communicationFields}
       </div>
     );
   }
@@ -341,18 +494,18 @@ function RegisterFields({
         <Field label={t("auth.name")} placeholder={t("auth.tutorName")} value={name} onChange={setName} />
         <Field label={t("auth.email")} type="email" placeholder={t("auth.tutorEmailPlaceholder")} value={email} onChange={setEmail} />
         <Field label={t("auth.password")} type="password" placeholder={t("auth.createPassword")} minLength={6} value={password} onChange={setPassword} />
-        <Field label={t("auth.wechatId")} placeholder={t("auth.wechatId")} value={wechatId} onChange={setWechatId} />
         <Field label={t("auth.school")} placeholder={t("auth.schoolName")} value={school} onChange={setSchool} />
         <SelectField label={t("auth.grade")} placeholder={t("auth.selectYourGrade")} options={gradeOptions} value={grade} onChange={setGrade} getOptionLabel={labelOption} />
-        <GradesToTutorMultiSelect
-          label={t("auth.studentGradeToTutor")}
-          placeholder={t("auth.selectTargetGrade")}
-          value={gradesToTutor}
-          onChange={setGradesToTutor}
-        />
         <Field label={t("auth.classLink")} type="url" placeholder={t("auth.videoClassLink")} value={classLink} onChange={setClassLink} />
-        <Field label={t("auth.classPassword")} placeholder={t("auth.classroomPassword")} value={classPassword} onChange={setClassPassword} />
-        <Field label={t("auth.howFoundOut")} placeholder={t("auth.howFoundOutPlaceholder")} value={howFoundOut} onChange={setHowFoundOut} />
+        <Field label={t("auth.classPassword")} type="password" placeholder={t("auth.classroomPassword")} minLength={4} maxLength={6} inputMode="numeric" pattern="[0-9]{4,6}" value={classPassword} onChange={(value) => setClassPassword(value.replace(/\D/g, "").slice(0, 6))} />
+        <Field label={`${t("auth.howFoundOut")} (${t("common.optional")})`} placeholder={t("auth.howFoundOutPlaceholder")} required={false} value={howFoundOut} onChange={setHowFoundOut} />
+        <TextAreaField
+          label={`${t("auth.tutorIntroduction")} (${t("common.optional")})`}
+          placeholder={t("auth.tutorIntroductionPlaceholder")}
+          value={tutorIntroduction}
+          onChange={setTutorIntroduction}
+        />
+        {communicationFields}
       </div>
     );
   }
@@ -362,7 +515,6 @@ function RegisterFields({
       <Field label={t("auth.name")} placeholder={t("auth.administratorName")} value={name} onChange={setName} />
       <Field label={t("auth.email")} type="email" placeholder={t("auth.adminEmailPlaceholder")} value={email} onChange={setEmail} />
       <Field label={t("auth.password")} type="password" placeholder={t("auth.createPassword")} minLength={6} value={password} onChange={setPassword} />
-      <Field label={t("auth.wechatId")} placeholder={t("auth.wechatId")} value={wechatId} onChange={setWechatId} />
     </div>
   );
 }
@@ -370,22 +522,29 @@ function RegisterFields({
 function AuthPageContent() {
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
+  const [saveLoginCredentials, setSaveLoginCredentials] = useState(false);
   const [name, setName] = useState("");
   const [registerEmail, setRegisterEmail] = useState("");
   const [registerPassword, setRegisterPassword] = useState("");
-  const [wechatId, setWechatId] = useState("");
+  const [communicationRecipient, setCommunicationRecipient] = useState<CommunicationRecipient | "">("");
+  const [studentWechatId, setStudentWechatId] = useState("");
+  const [parentWechatId, setParentWechatId] = useState("");
+  const [studentCommunicationEmail, setStudentCommunicationEmail] = useState("");
+  const [parentCommunicationEmail, setParentCommunicationEmail] = useState("");
+  const [preferredCommunication, setPreferredCommunication] = useState<PreferredCommunication | "">("");
+  const [notificationMethod, setNotificationMethod] = useState<NotificationMethod | "">("");
 
   const [country, setCountry] = useState("");
   const [grade, setGrade] = useState("");
-  const [englishLevel, setEnglishLevel] = useState("");
   const [referrer, setReferrer] = useState("");
   const [trialTeacher, setTrialTeacher] = useState("");
+  const [studentIntroduction, setStudentIntroduction] = useState("");
 
   const [school, setSchool] = useState("");
-  const [gradesToTutor, setGradesToTutor] = useState("");
   const [classLink, setClassLink] = useState("");
   const [classPassword, setClassPassword] = useState("");
   const [howFoundOut, setHowFoundOut] = useState("");
+  const [tutorIntroduction, setTutorIntroduction] = useState("");
 
   const [error, setError] = useState("");
   const [checkingSession, setCheckingSession] = useState(true);
@@ -420,7 +579,12 @@ function AuthPageContent() {
   function roleCanVisitPath(nextRole: Role | "admin", path: string) {
     const normalizedRole = normalizeRole(nextRole);
     if (normalizedRole === "student") {
-      return path === "/student-dashboard" || path === "/student-schedule" || path === "/student-materials" || path === "/student-communications";
+      return path === "/student-dashboard"
+        || path === "/student-schedule"
+        || path === "/student-materials"
+        || path === "/student-communications"
+        || path === "/speaking-samples"
+        || path.startsWith("/speaking-samples/");
     }
     if (normalizedRole === "tutor") {
       return (
@@ -430,10 +594,14 @@ function AuthPageContent() {
         path === "/training-materials" ||
         path === "/volunteer-awards" ||
         path === "/tutor-communications" ||
+        path.startsWith("/speaking-samples/") ||
         path.startsWith("/evaluations/")
       );
     }
-    return path === "/admin-dashboard" || path === "/admin-media" || path === "/admin-communications";
+    return path === "/admin-dashboard"
+      || path === "/admin-media"
+      || path === "/admin-communications"
+      || path.startsWith("/speaking-samples/");
   }
 
   function getPostAuthPath(nextRole: Role | "admin") {
@@ -462,6 +630,19 @@ function AuthPageContent() {
   }
 
   useEffect(() => {
+    try {
+      const saved = localStorage.getItem(savedLoginCredentialsKey);
+      if (!saved) return;
+      const parsed = JSON.parse(saved) as { email?: unknown; password?: unknown };
+      if (typeof parsed.email === "string") setLoginEmail(parsed.email);
+      if (typeof parsed.password === "string") setLoginPassword(parsed.password);
+      setSaveLoginCredentials(true);
+    } catch {
+      localStorage.removeItem(savedLoginCredentialsKey);
+    }
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function redirectExistingSession() {
@@ -473,7 +654,7 @@ function AuthPageContent() {
 
       const { data: existingProfile, error: existingProfileError } = await supabase
         .from("profiles")
-        .select("uid, role, name, email, wechat_id")
+        .select("uid, role, name, email")
         .eq("uid", data.user.id)
         .maybeSingle();
 
@@ -489,7 +670,6 @@ function AuthPageContent() {
             p_role: pendingRegistration.role,
             p_name: pendingRegistration.name,
             p_email: pendingRegistration.email,
-            p_wechat_id: pendingRegistration.wechatId,
             p_details: pendingRegistration.details,
           });
 
@@ -511,7 +691,6 @@ function AuthPageContent() {
             role: pendingRegistration.role,
             name: pendingRegistration.name,
             email: pendingRegistration.email,
-            wechat_id: pendingRegistration.wechatId,
           };
 
           const { error: metadataError } = await supabase.auth.updateUser({
@@ -533,7 +712,6 @@ function AuthPageContent() {
         role: profile.role,
         name: profile.name,
         email: profile.email,
-        wechatId: profile.wechat_id,
       });
       router.replace(getPostAuthPath(profile.role));
     }
@@ -559,14 +737,11 @@ function AuthPageContent() {
       role,
       name,
       email: registerEmail.trim(),
-      wechatId,
       country,
       grade,
-      englishLevel,
       referrer,
       trialTeacher,
       school,
-      gradesToTutor,
       classLink,
       classPassword,
       howFoundOut,
@@ -576,14 +751,29 @@ function AuthPageContent() {
   }
 
   function hasAllRequiredRegistrationFields() {
-    const sharedFields = [name, registerEmail, registerPassword, wechatId];
+    const sharedFields = [
+      name,
+      registerEmail,
+      registerPassword,
+      communicationRecipient,
+      preferredCommunication,
+      notificationMethod,
+    ];
+    const communicationFields = [
+      ...(communicationRecipient === "student" || communicationRecipient === "both"
+        ? [studentWechatId, studentCommunicationEmail]
+        : []),
+      ...(communicationRecipient === "parent" || communicationRecipient === "both"
+        ? [parentWechatId, parentCommunicationEmail]
+        : []),
+    ];
     const roleFields = role === "student"
-      ? [country, grade, englishLevel, referrer, trialTeacher]
+      ? [country, grade]
       : role === "tutor"
-        ? [school, grade, gradesToTutor, classLink, classPassword, howFoundOut]
+        ? [school, grade, classLink, classPassword]
         : [];
 
-    return [...sharedFields, ...roleFields].every((value) => value.trim().length > 0);
+    return [...sharedFields, ...communicationFields, ...roleFields].every((value) => value.trim().length > 0);
   }
 
   return (
@@ -649,7 +839,7 @@ function AuthPageContent() {
 
                 const { data: profile, error: profileError } = await supabase
                   .from("profiles")
-                  .select("*")
+                  .select("uid, role, name, email")
                   .eq("uid", user.id)
                   .single();
 
@@ -658,16 +848,32 @@ function AuthPageContent() {
                   return;
                 }
 
+                if (saveLoginCredentials) {
+                  localStorage.setItem(
+                    savedLoginCredentialsKey,
+                    JSON.stringify({ email: normalizedEmail, password: loginPassword })
+                  );
+                } else {
+                  localStorage.removeItem(savedLoginCredentialsKey);
+                }
+
                 storeUser({
                   uid: user.id,
                   role: profile.role,
                   name: profile.name,
                   email: profile.email,
-                  wechatId: profile.wechat_id,
                 });
 
                 router.push(getPostAuthPath(profile.role));
               } else if (mode === "register") {
+                if (notificationMethod === "wechat") {
+                  setError(t("auth.wechatNotificationsUnavailable"));
+                  return;
+                }
+                if (notificationMethod === "phone") {
+                  setError(t("auth.phoneNotificationWarning"));
+                  return;
+                }
                 if (!hasAllRequiredRegistrationFields()) {
                   setError(t("auth.requiredFields"));
                   return;
@@ -676,33 +882,50 @@ function AuthPageContent() {
                 const normalizedEmail = registerEmail.trim();
                 const registrationRole = role === "tutor" ? "tutor" : "student";
                 const normalizedClassLink = registrationRole === "tutor"
-                  ? safeExternalUrl(classLink)
+                  ? normalizeVoovMeetingUrl(classLink)
                   : null;
                 if (registrationRole === "tutor" && !normalizedClassLink) {
-                  setError(t("media.urlInvalid"));
+                  setError(t("auth.voovLinkRequired"));
+                  return;
+                }
+                if (registrationRole === "tutor" && !isValidMeetingPassword(classPassword)) {
+                  setError(t("auth.meetingPasswordInvalid"));
                   return;
                 }
                 const details: Record<string, string> = registrationRole === "student"
                   ? {
                       country,
                       grade,
-                      english_level: englishLevel,
                       referrer,
                       trial_teacher: trialTeacher,
+                      introduction: studentIntroduction.trim(),
+                      communication_recipient: communicationRecipient,
+                      student_wechat_id: communicationRecipient === "student" || communicationRecipient === "both" ? studentWechatId.trim() : "",
+                      parent_wechat_id: communicationRecipient === "parent" || communicationRecipient === "both" ? parentWechatId.trim() : "",
+                      student_email: communicationRecipient === "student" || communicationRecipient === "both" ? studentCommunicationEmail.trim() : "",
+                      parent_email: communicationRecipient === "parent" || communicationRecipient === "both" ? parentCommunicationEmail.trim() : "",
+                      preferred_communication: preferredCommunication,
+                      notification_method: notificationMethod,
                     }
                   : {
                       school,
                       grade,
-                      grades_to_tutor: gradesToTutor,
                       class_link: normalizedClassLink!,
                       meeting_password: classPassword,
                       how_found_out: howFoundOut,
+                      introduction: tutorIntroduction.trim(),
+                      communication_recipient: communicationRecipient,
+                      student_wechat_id: communicationRecipient === "student" || communicationRecipient === "both" ? studentWechatId.trim() : "",
+                      parent_wechat_id: communicationRecipient === "parent" || communicationRecipient === "both" ? parentWechatId.trim() : "",
+                      student_email: communicationRecipient === "student" || communicationRecipient === "both" ? studentCommunicationEmail.trim() : "",
+                      parent_email: communicationRecipient === "parent" || communicationRecipient === "both" ? parentCommunicationEmail.trim() : "",
+                      preferred_communication: preferredCommunication,
+                      notification_method: notificationMethod,
                     };
                 const pendingRegistration: PendingRegistration = {
                   role: registrationRole,
                   name: name.trim(),
                   email: normalizedEmail,
-                  wechatId: wechatId.trim(),
                   details,
                 };
                 const { data, error } = await supabase.auth.signUp({
@@ -745,7 +968,6 @@ function AuthPageContent() {
                   p_role: registrationRole,
                   p_name: name,
                   p_email: normalizedEmail,
-                  p_wechat_id: wechatId,
                   p_details: details,
                 });
 
@@ -773,6 +995,8 @@ function AuthPageContent() {
                   setEmail={setLoginEmail}
                   password={loginPassword}
                   setPassword={setLoginPassword}
+                  saveCredentials={saveLoginCredentials}
+                  setSaveCredentials={setSaveLoginCredentials}
                 />
               ) : (
                 <RegisterFields
@@ -785,29 +1009,41 @@ function AuthPageContent() {
                   setEmail={setRegisterEmail}
                   password={registerPassword}
                   setPassword={setRegisterPassword}
-                  wechatId={wechatId}
-                  setWechatId={setWechatId}
+                  communicationRecipient={communicationRecipient}
+                  setCommunicationRecipient={setCommunicationRecipient}
+                  studentWechatId={studentWechatId}
+                  setStudentWechatId={setStudentWechatId}
+                  parentWechatId={parentWechatId}
+                  setParentWechatId={setParentWechatId}
+                  studentCommunicationEmail={studentCommunicationEmail}
+                  setStudentCommunicationEmail={setStudentCommunicationEmail}
+                  parentCommunicationEmail={parentCommunicationEmail}
+                  setParentCommunicationEmail={setParentCommunicationEmail}
+                  preferredCommunication={preferredCommunication}
+                  setPreferredCommunication={setPreferredCommunication}
+                  notificationMethod={notificationMethod}
+                  setNotificationMethod={setNotificationMethod}
                   country={country}
                   setCountry={setCountry}
                   countryOptions={countryOptions}
                   grade={grade}
                   setGrade={setGrade}
-                  englishLevel={englishLevel}
-                  setEnglishLevel={setEnglishLevel}
                   referrer={referrer}
                   setReferrer={setReferrer}
                   trialTeacher={trialTeacher}
                   setTrialTeacher={setTrialTeacher}
+                  studentIntroduction={studentIntroduction}
+                  setStudentIntroduction={setStudentIntroduction}
                   school={school}
                   setSchool={setSchool}
-                  gradesToTutor={gradesToTutor}
-                  setGradesToTutor={setGradesToTutor}
                   classLink={classLink}
                   setClassLink={setClassLink}
                   classPassword={classPassword}
                   setClassPassword={setClassPassword}
                   howFoundOut={howFoundOut}
                   setHowFoundOut={setHowFoundOut}
+                  tutorIntroduction={tutorIntroduction}
+                  setTutorIntroduction={setTutorIntroduction}
                 />
               )}
             </div>
@@ -818,7 +1054,8 @@ function AuthPageContent() {
             )}
             <button
               type="submit"
-              className="w-full rounded-xl bg-primary px-6 py-3 text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 sm:w-fit"
+              disabled={mode === "register" && notificationMethod === "phone"}
+              className="w-full rounded-xl bg-primary px-6 py-3 text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50 sm:w-fit"
             >
               {mode === "login" ? t("auth.login") : t("auth.createAccount")}
             </button>

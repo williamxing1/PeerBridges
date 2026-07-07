@@ -2,11 +2,49 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import Link from "next/link";
-import { BookOpen, CheckCircle2, LockKeyhole } from "lucide-react";
+import { BookOpen, CheckCircle2, Eye, EyeOff, LockKeyhole } from "lucide-react";
 import { LanguageSelect, useLanguage } from "../i18n";
 import { supabase } from "../../lib/supabase/client";
 
 type RecoveryState = "verifying" | "ready" | "success" | "error";
+
+function PasswordInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const { t } = useLanguage();
+  const [visible, setVisible] = useState(false);
+
+  return (
+    <label className="grid gap-2 text-sm text-card-foreground">
+      {label}
+      <span className="relative block">
+        <input
+          type={visible ? "text" : "password"}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          minLength={6}
+          required
+          autoComplete="new-password"
+          className="w-full rounded-xl border border-border bg-background px-4 py-3 pr-12 outline-none transition-colors focus:border-primary"
+        />
+        <button
+          type="button"
+          onClick={() => setVisible((current) => !current)}
+          aria-label={t(visible ? "common.hidePassword" : "common.showPassword")}
+          className="absolute inset-y-0 right-0 flex w-12 items-center justify-center text-muted-foreground transition-colors hover:text-card-foreground"
+        >
+          {visible ? <EyeOff size={18} /> : <Eye size={18} />}
+        </button>
+      </span>
+    </label>
+  );
+}
 
 export default function ResetPasswordPage() {
   const { t } = useLanguage();
@@ -181,30 +219,16 @@ export default function ResetPasswordPage() {
                 {t("passwordReset.help")}
               </p>
               <form onSubmit={handleSubmit} className="mt-7 grid gap-4 text-left">
-                <label className="grid gap-2 text-sm text-card-foreground">
-                  {t("passwordReset.newPassword")}
-                  <input
-                    type="password"
-                    value={newPassword}
-                    onChange={(event) => setNewPassword(event.target.value)}
-                    minLength={6}
-                    required
-                    autoComplete="new-password"
-                    className="w-full rounded-xl border border-border bg-background px-4 py-3 outline-none transition-colors focus:border-primary"
-                  />
-                </label>
-                <label className="grid gap-2 text-sm text-card-foreground">
-                  {t("passwordReset.confirmPassword")}
-                  <input
-                    type="password"
-                    value={confirmPassword}
-                    onChange={(event) => setConfirmPassword(event.target.value)}
-                    minLength={6}
-                    required
-                    autoComplete="new-password"
-                    className="w-full rounded-xl border border-border bg-background px-4 py-3 outline-none transition-colors focus:border-primary"
-                  />
-                </label>
+                <PasswordInput
+                  label={t("passwordReset.newPassword")}
+                  value={newPassword}
+                  onChange={setNewPassword}
+                />
+                <PasswordInput
+                  label={t("passwordReset.confirmPassword")}
+                  value={confirmPassword}
+                  onChange={setConfirmPassword}
+                />
                 {error && <p className="text-sm text-destructive">{error}</p>}
                 <button
                   type="submit"
