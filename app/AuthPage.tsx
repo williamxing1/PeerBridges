@@ -298,6 +298,8 @@ type RegisterFieldsProps = LoginFieldsProps & {
   role: Role;
   name: string;
   setName: (value: string) => void;
+  confirmPassword: string;
+  setConfirmPassword: (value: string) => void;
   communicationRecipient: CommunicationRecipient | "";
   setCommunicationRecipient: (value: CommunicationRecipient) => void;
   studentWechatId: string;
@@ -371,6 +373,8 @@ function RegisterFields({
   setEmail,
   password,
   setPassword,
+  confirmPassword,
+  setConfirmPassword,
   communicationRecipient,
   setCommunicationRecipient,
   studentWechatId,
@@ -473,6 +477,7 @@ function RegisterFields({
         <Field label={t("auth.name")} placeholder={t("auth.studentName")} value={name} onChange={setName} />
         <Field label={t("auth.email")} type="email" placeholder={t("auth.studentEmailPlaceholder")} value={email} onChange={setEmail} />
         <Field label={t("auth.password")} type="password" placeholder={t("auth.createPassword")} minLength={6} value={password} onChange={setPassword} />
+        <Field label={t("auth.confirmPassword")} type="password" placeholder={t("auth.confirmPasswordPlaceholder")} minLength={6} value={confirmPassword} onChange={setConfirmPassword} />
         <CountrySelect label={t("auth.country")} placeholder={t("auth.countryPlaceholder")} options={countryOptions} value={country} onChange={setCountry} />
         <SelectField label={t("auth.grade")} placeholder={t("auth.selectGrade")} options={gradeOptions} value={grade} onChange={setGrade} getOptionLabel={labelOption} />
         <Field label={`${t("auth.referrer")} (${t("common.optional")})`} placeholder={t("auth.referrerPlaceholder")} required={false} value={referrer} onChange={setReferrer} />
@@ -494,6 +499,7 @@ function RegisterFields({
         <Field label={t("auth.name")} placeholder={t("auth.tutorName")} value={name} onChange={setName} />
         <Field label={t("auth.email")} type="email" placeholder={t("auth.tutorEmailPlaceholder")} value={email} onChange={setEmail} />
         <Field label={t("auth.password")} type="password" placeholder={t("auth.createPassword")} minLength={6} value={password} onChange={setPassword} />
+        <Field label={t("auth.confirmPassword")} type="password" placeholder={t("auth.confirmPasswordPlaceholder")} minLength={6} value={confirmPassword} onChange={setConfirmPassword} />
         <Field label={t("auth.school")} placeholder={t("auth.schoolName")} value={school} onChange={setSchool} />
         <SelectField label={t("auth.grade")} placeholder={t("auth.selectYourGrade")} options={gradeOptions} value={grade} onChange={setGrade} getOptionLabel={labelOption} />
         <Field label={t("auth.classLink")} type="url" placeholder={t("auth.videoClassLink")} value={classLink} onChange={setClassLink} />
@@ -526,6 +532,7 @@ function AuthPageContent() {
   const [name, setName] = useState("");
   const [registerEmail, setRegisterEmail] = useState("");
   const [registerPassword, setRegisterPassword] = useState("");
+  const [confirmRegisterPassword, setConfirmRegisterPassword] = useState("");
   const [communicationRecipient, setCommunicationRecipient] = useState<CommunicationRecipient | "">("");
   const [studentWechatId, setStudentWechatId] = useState("");
   const [parentWechatId, setParentWechatId] = useState("");
@@ -694,7 +701,10 @@ function AuthPageContent() {
           };
 
           const { error: metadataError } = await supabase.auth.updateUser({
-            data: { pending_registration: null },
+            data: {
+              name: pendingRegistration.name,
+              pending_registration: null,
+            },
           });
           if (metadataError) {
             console.error("Failed to clear completed registration metadata", metadataError);
@@ -755,6 +765,7 @@ function AuthPageContent() {
       name,
       registerEmail,
       registerPassword,
+      confirmRegisterPassword,
       communicationRecipient,
       preferredCommunication,
       notificationMethod,
@@ -878,6 +889,10 @@ function AuthPageContent() {
                   setError(t("auth.requiredFields"));
                   return;
                 }
+                if (registerPassword !== confirmRegisterPassword) {
+                  setError(t("auth.passwordMismatch"));
+                  return;
+                }
 
                 const normalizedEmail = registerEmail.trim();
                 const registrationRole = role === "tutor" ? "tutor" : "student";
@@ -933,7 +948,10 @@ function AuthPageContent() {
                   password: registerPassword,
                   options: {
                     emailRedirectTo: window.location.origin,
-                    data: { pending_registration: pendingRegistration },
+                    data: {
+                      name: pendingRegistration.name,
+                      pending_registration: pendingRegistration,
+                    },
                   },
                 });
 
@@ -1009,6 +1027,8 @@ function AuthPageContent() {
                   setEmail={setRegisterEmail}
                   password={registerPassword}
                   setPassword={setRegisterPassword}
+                  confirmPassword={confirmRegisterPassword}
+                  setConfirmPassword={setConfirmRegisterPassword}
                   communicationRecipient={communicationRecipient}
                   setCommunicationRecipient={setCommunicationRecipient}
                   studentWechatId={studentWechatId}
