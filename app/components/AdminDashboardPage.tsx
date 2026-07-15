@@ -2,13 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Select from "@radix-ui/react-select";
-import { BookOpen, CalendarDays, ChevronDown, Clock, GraduationCap, Users, type LucideIcon } from "lucide-react";
+import { BookOpen, CalendarDays, CheckCircle2, ChevronDown, ClipboardList, Clock, GraduationCap, Star, UserCheck, Users, type LucideIcon } from "lucide-react";
 import { supabase } from "../../lib/supabase/client";
 import { useLanguage, type TranslationKey } from "../i18n";
+import { PersonProfileDetails, type ProfilePerson } from "./PersonProfileDetails";
 
 type PersonType = "student" | "tutor";
-
-const ALL_TIME_START = "2020-01-01";
 
 type ProfileRow = {
   uid: string;
@@ -28,6 +27,24 @@ type VolunteerRecordRow = {
   tutor_uid: string;
   uploaded_at: string;
   minutes: number;
+  task_name?: string;
+};
+type IndividualClassRow = ClassRow & {
+  evaluation_completed: boolean;
+  student_attended: boolean | null;
+  teacher_attended: boolean | null;
+};
+type AssignmentRow = {
+  assignment_id: string;
+  lesson_id: string | null;
+  student_uid: string;
+  teacher_uid: string;
+  complete: boolean;
+};
+type EvaluationRow = {
+  evaluation_id: string;
+  lesson_id: string;
+  stars: number;
 };
 type PersonOption = {
   uid: string;
@@ -59,14 +76,6 @@ function oneMonthBeforeTodayInput() {
   return formatDateInput(date);
 }
 
-function formatDateLabel(value: string) {
-  return parseDate(value).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-}
-
 function endOfDay(value: string) {
   return new Date(`${value}T23:59:59.999`);
 }
@@ -86,6 +95,10 @@ function classMinutes(cls: ClassRow) {
 function hoursLabel(minutes: number) {
   const hours = minutes / 60;
   return `${Number.isInteger(hours) ? hours : hours.toFixed(1)}h`;
+}
+
+function percentLabel(value: number, total: number) {
+  return total > 0 ? `${Math.round((value / total) * 100)}%` : "—";
 }
 
 function inDateRange(date: Date, start: string, end: string) {
@@ -411,10 +424,6 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
   const maxDate = todayInput();
   const [startDate, setStartDate] = useState(oneMonthBeforeTodayInput);
   const [endDate, setEndDate] = useState(todayInput);
-  const [personStart, setPersonStart] = useState(oneMonthBeforeTodayInput);
-  const [personEnd, setPersonEnd] = useState(todayInput);
-  const [personType, setPersonType] = useState<PersonType>("student");
-  const [selectedPerson, setSelectedPerson] = useState("");
   const [profiles, setProfiles] = useState<ProfileRow[]>([]);
   const [classes, setClasses] = useState<ClassRow[]>([]);
   const [volunteerRecords, setVolunteerRecords] = useState<VolunteerRecordRow[]>([]);
@@ -434,7 +443,6 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
   const tutorOptions = tutorProfiles
     .map(({ uid, name }) => ({ uid, name }))
     .sort((a, b) => a.name.localeCompare(b.name));
-  const selectedOptions = personType === "student" ? studentOptions : tutorOptions;
   const completedClasses = classes.filter((cls) => classEndsAt(cls) <= now);
   const allTimeVolunteerMinutes = volunteerRecords.reduce((total, record) => total + record.minutes, 0);
   const periodClasses = completedClasses.filter((cls) => inDateRange(classStartsAt(cls), startDate, endDate));
@@ -452,28 +460,6 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
     .map((uid) => ({ uid, name: profileName.get(uid) ?? t("common.tutor") }));
   const studentGrowth = useMemo(() => growthPoints(startDate, endDate, studentProfiles, lang), [startDate, endDate, studentProfiles, lang]);
   const tutorGrowth = useMemo(() => growthPoints(startDate, endDate, tutorProfiles, lang), [startDate, endDate, tutorProfiles, lang]);
-  const personClasses = selectedPerson
-    ? completedClasses.filter((cls) =>
-        personType === "student"
-          ? cls.student_uid === selectedPerson
-          : cls.teacher_uid === selectedPerson
-      ).filter((cls) => inDateRange(classStartsAt(cls), personStart, personEnd))
-    : [];
-  const personVolunteerMinutes = selectedPerson && personType === "tutor"
-    ? volunteerRecords
-        .filter((record) => record.tutor_uid === selectedPerson && inDateRange(new Date(record.uploaded_at), personStart, personEnd))
-        .reduce((total, record) => total + record.minutes, 0)
-    : 0;
-  const personStats =
-    personType === "student"
-      ? [
-          { label: t("admin.classesAttended"), value: String(personClasses.length) },
-          { label: t("admin.hoursSpentLearning"), value: hoursLabel(personClasses.reduce((total, cls) => total + classMinutes(cls), 0)) },
-        ]
-      : [
-          { label: t("admin.studentsTutored"), value: String(new Set(personClasses.map((cls) => cls.student_uid)).size) },
-          { label: t("dashboard.totalHoursSpent"), value: hoursLabel(personVolunteerMinutes) },
-        ];
 
   useEffect(() => {
     let cancelled = false;
@@ -519,11 +505,6 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
       cancelled = true;
     };
   }, []);
-
-  useEffect(() => {
-    const options = personType === "student" ? studentOptions : tutorOptions;
-    setSelectedPerson((current) => options.some((option) => option.uid === current) ? current : options[0]?.uid ?? "");
-  }, [personType, studentOptions, tutorOptions]);
 
   return (
     <div className="flex flex-col gap-4">
@@ -605,11 +586,160 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
         </div>
       </section>
 
+    </div>
+  );
+}
+
+export function AdminIndividualQueryPage() {
+  const { t } = useLanguage();
+  const maxDate = todayInput();
+  const [startDate, setStartDate] = useState(oneMonthBeforeTodayInput);
+  const [endDate, setEndDate] = useState(todayInput);
+  const [personType, setPersonType] = useState<PersonType>("student");
+  const [selectedPersonUid, setSelectedPersonUid] = useState("");
+  const [profiles, setProfiles] = useState<ProfileRow[]>([]);
+  const [classes, setClasses] = useState<IndividualClassRow[]>([]);
+  const [volunteerRecords, setVolunteerRecords] = useState<VolunteerRecordRow[]>([]);
+  const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
+  const [evaluations, setEvaluations] = useState<EvaluationRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const studentOptions = useMemo(
+    () => profiles
+      .filter((profile) => profile.role === "student")
+      .map(({ uid, name }) => ({ uid, name }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    [profiles]
+  );
+  const tutorOptions = useMemo(
+    () => profiles
+      .filter((profile) => profile.role === "tutor")
+      .map(({ uid, name }) => ({ uid, name }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    [profiles]
+  );
+  const selectedOptions = personType === "student" ? studentOptions : tutorOptions;
+  const selectedProfile = profiles.find((profile) => profile.uid === selectedPersonUid && profile.role === personType);
+  const selectedPerson: ProfilePerson | null = selectedProfile
+    ? { uid: selectedProfile.uid, role: personType, name: selectedProfile.name }
+    : null;
+
+  const completedClasses = classes.filter((cls) => classEndsAt(cls) <= new Date());
+  const personClasses = selectedPersonUid
+    ? completedClasses
+        .filter((cls) => personType === "student" ? cls.student_uid === selectedPersonUid : cls.teacher_uid === selectedPersonUid)
+        .filter((cls) => inDateRange(classStartsAt(cls), startDate, endDate))
+    : [];
+  const lessonIds = new Set(personClasses.map((cls) => cls.lesson_id));
+  const personAssignments = assignments.filter((assignment) => assignment.lesson_id && lessonIds.has(assignment.lesson_id));
+  const personEvaluations = evaluations.filter((evaluation) => lessonIds.has(evaluation.lesson_id));
+  const periodVolunteerRecords = selectedPersonUid && personType === "tutor"
+    ? volunteerRecords.filter(
+        (record) => record.tutor_uid === selectedPersonUid && inDateRange(new Date(record.uploaded_at), startDate, endDate)
+      )
+    : [];
+  const attendedClasses = personClasses.filter((cls) => personType === "student" ? cls.student_attended === true : cls.teacher_attended === true).length;
+  const evaluationCount = personClasses.filter((cls) => cls.evaluation_completed).length;
+  const averageRating = personEvaluations.length > 0
+    ? personEvaluations.reduce((total, evaluation) => total + evaluation.stars, 0) / personEvaluations.length
+    : null;
+  const totalVolunteerMinutes = periodVolunteerRecords.reduce((total, record) => total + record.minutes, 0);
+  const preparationEvaluationMinutes = periodVolunteerRecords
+    .filter((record) => !record.task_name?.startsWith("Class time -"))
+    .reduce((total, record) => total + record.minutes, 0);
+
+  const studentStats = [
+    { label: t("admin.classesAttended"), value: String(personClasses.length), icon: BookOpen },
+    { label: t("admin.hoursSpentLearning"), value: hoursLabel(personClasses.reduce((total, cls) => total + classMinutes(cls), 0)), icon: Clock },
+    { label: t("admin.tutorsWorkedWith"), value: String(new Set(personClasses.map((cls) => cls.teacher_uid)).size), icon: Users },
+    { label: t("admin.attendanceConfirmed"), value: String(attendedClasses), icon: UserCheck },
+    { label: t("admin.attendanceRate"), value: percentLabel(attendedClasses, personClasses.length), icon: CheckCircle2 },
+    { label: t("admin.assignmentsReceived"), value: String(personAssignments.length), icon: ClipboardList },
+    { label: t("admin.assignmentsCompleted"), value: String(personAssignments.filter((assignment) => assignment.complete).length), icon: CheckCircle2 },
+    { label: t("admin.evaluationsReceived"), value: String(personEvaluations.length), icon: Star },
+    { label: t("admin.averageEvaluationRating"), value: averageRating === null ? "—" : `${averageRating.toFixed(1)} / 5`, icon: Star },
+  ];
+  const tutorStats = [
+    { label: t("admin.studentsTutored"), value: String(new Set(personClasses.map((cls) => cls.student_uid)).size), icon: Users },
+    { label: t("dashboard.totalHoursSpent"), value: hoursLabel(totalVolunteerMinutes), icon: Clock },
+    { label: t("admin.classesTaught"), value: String(personClasses.length), icon: BookOpen },
+    { label: t("admin.teachingHours"), value: hoursLabel(personClasses.reduce((total, cls) => total + classMinutes(cls), 0)), icon: Clock },
+    { label: t("admin.attendanceConfirmed"), value: String(attendedClasses), icon: UserCheck },
+    { label: t("admin.attendanceRate"), value: percentLabel(attendedClasses, personClasses.length), icon: CheckCircle2 },
+    { label: t("admin.evaluationsCompleted"), value: String(evaluationCount), icon: Star },
+    { label: t("admin.evaluationCompletionRate"), value: percentLabel(evaluationCount, personClasses.length), icon: CheckCircle2 },
+    { label: t("admin.assignmentsAssigned"), value: String(personAssignments.length), icon: ClipboardList },
+    { label: t("admin.preparationEvaluationHours"), value: hoursLabel(preparationEvaluationMinutes), icon: Clock },
+  ];
+  const personStats = personType === "student" ? studentStats : tutorStats;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadIndividualQueryData() {
+      setLoading(true);
+      setError("");
+
+      const [profilesResult, classesResult, volunteerResult, assignmentsResult, evaluationsResult] = await Promise.all([
+        supabase.from("profiles").select("uid, role, name, created_at").in("role", ["student", "tutor"]),
+        supabase.from("classes").select("lesson_id, student_uid, teacher_uid, time, duration, status, evaluation_completed, student_attended, teacher_attended"),
+        supabase.from("volunteer_records").select("tutor_uid, uploaded_at, minutes, task_name"),
+        supabase.from("assignments").select("assignment_id, lesson_id, student_uid, teacher_uid, complete"),
+        supabase.from("evaluations").select("evaluation_id, lesson_id, stars"),
+      ]);
+
+      if (cancelled) return;
+
+      const firstError = profilesResult.error
+        ?? classesResult.error
+        ?? volunteerResult.error
+        ?? assignmentsResult.error
+        ?? evaluationsResult.error;
+      if (firstError) {
+        setError(firstError.message);
+        setLoading(false);
+        return;
+      }
+
+      setProfiles((profilesResult.data ?? []) as ProfileRow[]);
+      setClasses(((classesResult.data ?? []) as IndividualClassRow[]).filter((cls) => cls.status !== "cancelled"));
+      setVolunteerRecords((volunteerResult.data ?? []) as VolunteerRecordRow[]);
+      setAssignments((assignmentsResult.data ?? []) as AssignmentRow[]);
+      setEvaluations((evaluationsResult.data ?? []) as EvaluationRow[]);
+      setLoading(false);
+    }
+
+    void loadIndividualQueryData();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    setSelectedPersonUid((current) =>
+      selectedOptions.some((option) => option.uid === current) ? current : selectedOptions[0]?.uid ?? ""
+    );
+  }, [selectedOptions]);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div>
+        <h2 className="text-foreground">{t("admin.individualQuery")}</h2>
+        <p className="mt-0.5 text-sm text-muted-foreground">{t("admin.individualQueryHelp")}</p>
+      </div>
+
+      {error && (
+        <div className="rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
       <section className="rounded-2xl border border-border bg-card p-5">
-        <h3 className="text-card-foreground">{t("admin.individualQuery")}</h3>
-        <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1.2fr]">
-          <CalendarInput label={t("common.startDate")} value={personStart} onChange={setPersonStart} />
-          <CalendarInput label={t("common.endDate")} value={personEnd} onChange={(value) => setPersonEnd(clampDateInput(value, maxDate))} max={maxDate} />
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1.2fr]">
+          <CalendarInput label={t("common.startDate")} value={startDate} onChange={setStartDate} />
+          <CalendarInput label={t("common.endDate")} value={endDate} onChange={(value) => setEndDate(clampDateInput(value, maxDate))} max={maxDate} />
           <div>
             <span className="text-sm text-card-foreground">{t("common.type")}</span>
             <div className="mt-2 flex h-11 rounded-xl bg-muted p-1">
@@ -617,10 +747,8 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
                 <button
                   key={type}
                   type="button"
-                  onClick={() => {
-                    setPersonType(type);
-                  }}
-                  className={`flex-1 rounded-lg text-sm capitalize transition-all ${
+                  onClick={() => setPersonType(type)}
+                  className={`flex-1 rounded-lg text-sm transition-all ${
                     personType === type ? "bg-card text-card-foreground shadow-sm" : "text-muted-foreground"
                   }`}
                 >
@@ -632,14 +760,32 @@ export function AdminDashboardPage({ lang }: { lang: string }) {
           <div>
             <span className="text-sm text-card-foreground">{t("common.name")}</span>
             <div className="mt-2">
-              <SelectPerson type={personType} value={selectedPerson} onChange={setSelectedPerson} options={selectedOptions} />
+              <SelectPerson type={personType} value={selectedPersonUid} onChange={setSelectedPersonUid} options={selectedOptions} />
             </div>
           </div>
         </div>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          {personStats.map((stat) => (
-            <StatBox key={stat.label} label={stat.label} value={stat.value} icon={personType === "student" ? GraduationCap : Users} />
-          ))}
+      </section>
+
+      <section className="grid items-start gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.5fr)]">
+        <div className="rounded-2xl border border-border bg-card p-5">
+          <div className="mb-4">
+            <h3 className="text-card-foreground">{selectedPerson?.name ?? t("admin.profileDetails")}</h3>
+            {selectedPerson && (
+              <p className="mt-1 text-sm text-muted-foreground">
+                {t(selectedPerson.role === "student" ? "common.student" : "common.tutor")}
+              </p>
+            )}
+          </div>
+          <PersonProfileDetails person={selectedPerson} />
+        </div>
+
+        <div className="rounded-2xl border border-border bg-card p-5">
+          <h3 className="text-card-foreground">{t("admin.statistics")}</h3>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
+            {personStats.map((stat) => (
+              <StatBox key={stat.label} label={stat.label} value={loading ? "..." : stat.value} icon={stat.icon} />
+            ))}
+          </div>
         </div>
       </section>
     </div>

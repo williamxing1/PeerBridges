@@ -8,7 +8,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { StudentSchedulePage } from "./components/StudentSchedulePage";
 import { TutorSchedulePage } from "./components/TutorSchedulePage";
 import { VolunteerRecordPage } from "./components/VolunteerRecordPage";
-import { AdminDashboardPage } from "./components/AdminDashboardPage";
+import { AdminDashboardPage, AdminIndividualQueryPage } from "./components/AdminDashboardPage";
 import { ManageMediaPage, MediaListPage } from "./components/MediaPages";
 import { CommunicationsPage } from "./components/CommunicationsPage";
 import { StudentSpeakingSamplesPage } from "./components/SpeakingSamplesPage";
@@ -2038,6 +2038,7 @@ function TopNav({
 function Sidebar({
   active,
   dashboardHref,
+  individualQueryHref,
   scheduleHref,
   scheduleLabel,
   recordHref,
@@ -2052,6 +2053,7 @@ function Sidebar({
 }: {
   active: string;
   dashboardHref: string;
+  individualQueryHref?: string;
   scheduleHref?: string | null;
   scheduleLabel: string;
   recordHref?: string;
@@ -2068,6 +2070,9 @@ function Sidebar({
   const router = useRouter();
   const items = [
     { id: "dashboard", href: dashboardHref, icon: LayoutDashboard, label: t("common.dashboard") },
+    ...(individualQueryHref
+      ? [{ id: "individualQuery", href: individualQueryHref, icon: User, label: t("admin.individualQuery") }]
+      : []),
     ...(scheduleHref
       ? [{ id: "schedule", href: scheduleHref, icon: CalendarDays, label: scheduleLabel }]
       : []),
@@ -3950,6 +3955,7 @@ export function AppShell({
   children,
   user = STUDENT,
   dashboardHref = "/student-dashboard",
+  individualQueryHref,
   scheduleHref = "/student-schedule",
   recordHref,
   trainingHref,
@@ -3960,10 +3966,11 @@ export function AppShell({
   communicationsHref,
   requiredRole,
 }: {
-  activePage: "dashboard" | "schedule" | "record" | "training" | "awards" | "studentMaterials" | "speakingSamples" | "manageMedia" | "communications";
+  activePage: "dashboard" | "individualQuery" | "schedule" | "record" | "training" | "awards" | "studentMaterials" | "speakingSamples" | "manageMedia" | "communications";
   children: (lang: string) => ReactNode;
   user?: typeof STUDENT;
   dashboardHref?: string;
+  individualQueryHref?: string;
   scheduleHref?: string | null;
   recordHref?: string;
   trainingHref?: string;
@@ -3980,6 +3987,7 @@ export function AppShell({
         activePage={activePage}
         user={user}
         dashboardHref={dashboardHref}
+        individualQueryHref={individualQueryHref}
         scheduleHref={scheduleHref}
         recordHref={recordHref}
         trainingHref={trainingHref}
@@ -4001,6 +4009,7 @@ function AppShellContent({
   children,
   user,
   dashboardHref,
+  individualQueryHref,
   scheduleHref,
   recordHref,
   trainingHref,
@@ -4011,10 +4020,11 @@ function AppShellContent({
   communicationsHref,
   requiredRole,
 }: {
-  activePage: "dashboard" | "schedule" | "record" | "training" | "awards" | "studentMaterials" | "speakingSamples" | "manageMedia" | "communications";
+  activePage: "dashboard" | "individualQuery" | "schedule" | "record" | "training" | "awards" | "studentMaterials" | "speakingSamples" | "manageMedia" | "communications";
   children: (lang: string) => ReactNode;
   user: typeof STUDENT;
   dashboardHref: string;
+  individualQueryHref?: string;
   scheduleHref?: string | null;
   recordHref?: string;
   trainingHref?: string;
@@ -4202,6 +4212,7 @@ function AppShellContent({
         <Sidebar
           active={activePage}
           dashboardHref={dashboardHref}
+          individualQueryHref={individualQueryHref}
           scheduleHref={scheduleHref}
           scheduleLabel={requiredRole === "tutor" ? t("schedule.setAvailability") : t("schedule.studentTitle")}
           recordHref={recordHref}
@@ -4320,15 +4331,23 @@ export function TutorCommunicationsApp() {
 
 export function AdminApp() {
   return (
-    <AppShell activePage="dashboard" user={ADMIN} dashboardHref="/admin-dashboard" scheduleHref={null} manageMediaHref="/admin-media" communicationsHref="/admin-communications" requiredRole="admin">
+    <AppShell activePage="dashboard" user={ADMIN} dashboardHref="/admin-dashboard" individualQueryHref="/admin-individual-query" scheduleHref={null} manageMediaHref="/admin-media" communicationsHref="/admin-communications" requiredRole="admin">
       {(lang) => <AdminDashboardPage lang={lang} />}
+    </AppShell>
+  );
+}
+
+export function AdminIndividualQueryApp() {
+  return (
+    <AppShell activePage="individualQuery" user={ADMIN} dashboardHref="/admin-dashboard" individualQueryHref="/admin-individual-query" scheduleHref={null} manageMediaHref="/admin-media" communicationsHref="/admin-communications" requiredRole="admin">
+      {() => <AdminIndividualQueryPage />}
     </AppShell>
   );
 }
 
 export function ManageMediaApp() {
   return (
-    <AppShell activePage="manageMedia" user={ADMIN} dashboardHref="/admin-dashboard" scheduleHref={null} manageMediaHref="/admin-media" communicationsHref="/admin-communications" requiredRole="admin">
+    <AppShell activePage="manageMedia" user={ADMIN} dashboardHref="/admin-dashboard" individualQueryHref="/admin-individual-query" scheduleHref={null} manageMediaHref="/admin-media" communicationsHref="/admin-communications" requiredRole="admin">
       {() => <ManageMediaPage />}
     </AppShell>
   );
@@ -4336,7 +4355,7 @@ export function ManageMediaApp() {
 
 export function AdminCommunicationsApp() {
   return (
-    <AppShell activePage="communications" user={ADMIN} dashboardHref="/admin-dashboard" scheduleHref={null} manageMediaHref="/admin-media" communicationsHref="/admin-communications" requiredRole="admin">
+    <AppShell activePage="communications" user={ADMIN} dashboardHref="/admin-dashboard" individualQueryHref="/admin-individual-query" scheduleHref={null} manageMediaHref="/admin-media" communicationsHref="/admin-communications" requiredRole="admin">
       {() => <CommunicationsPage viewerRole="admin" />}
     </AppShell>
   );

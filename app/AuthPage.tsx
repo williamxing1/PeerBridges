@@ -606,6 +606,7 @@ function AuthPageContent() {
       );
     }
     return path === "/admin-dashboard"
+      || path === "/admin-individual-query"
       || path === "/admin-media"
       || path === "/admin-communications"
       || path.startsWith("/speaking-samples/");
