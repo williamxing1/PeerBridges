@@ -1,8 +1,8 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import * as Select from "@radix-ui/react-select";
-import { Check, ChevronDown, Download, FileText, Upload } from "lucide-react";
+import { Check, ChevronDown, Eye, FileText, Upload } from "lucide-react";
 import { supabase } from "../../lib/supabase/client";
 import { useLanguage } from "../i18n";
 import { coverImageValidationError, safeExternalUrl } from "../lib/security";
@@ -143,22 +143,22 @@ export function MediaListPage({
                   {material.media_name}
                 </h3>
               </div>
-              <div className="mx-4 mt-4 flex h-44 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border bg-muted p-2">
+              <div className="mx-4 mt-4 min-h-[11rem] flex-1 overflow-hidden rounded-xl border border-border bg-muted">
                 <img
                   src={material.coverImageUrl}
                   alt=""
-                  className="max-h-full max-w-full object-contain"
+                  className="h-full w-full object-cover"
                 />
               </div>
-              <div className="mt-auto p-4">
+              <div className="p-4">
                 <a
                   href={safeExternalUrl(material.file_url) ?? "#"}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm text-primary-foreground transition-colors hover:bg-primary/90"
                 >
-                  <Download size={15} />
-                  {t("media.download")}
+                  <Eye size={15} />
+                  {t("media.view")}
                 </a>
               </div>
             </article>
@@ -171,6 +171,7 @@ export function MediaListPage({
 
 export function ManageMediaPage() {
   const { t } = useLanguage();
+  const coverImageInputRef = useRef<HTMLInputElement>(null);
   const [category, setCategory] = useState<MediaCategory>("tutor_training");
   const [name, setName] = useState("");
   const [coverImage, setCoverImage] = useState<File | null>(null);
@@ -207,6 +208,7 @@ export function ManageMediaPage() {
 
     const extensionByType: Record<string, string> = {
       "image/jpeg": "jpg",
+      "image/jpg": "jpg",
       "image/png": "png",
       "image/webp": "webp",
     };
@@ -242,6 +244,9 @@ export function ManageMediaPage() {
     setCategory("tutor_training");
     setName("");
     setCoverImage(null);
+    if (coverImageInputRef.current) {
+      coverImageInputRef.current.value = "";
+    }
     setFileUrl("");
     setMessage(t("media.created"));
     setSaving(false);
@@ -298,6 +303,7 @@ export function ManageMediaPage() {
         <label className="block">
           <span className="text-sm text-card-foreground">{t("media.coverImage")}</span>
           <input
+            ref={coverImageInputRef}
             required
             type="file"
             accept="image/*"
