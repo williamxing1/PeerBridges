@@ -63,18 +63,6 @@ function isEmailNotConfirmedError(message: string) {
   return message.toLowerCase().includes("email not confirmed");
 }
 
-function isPendingRegistration(value: unknown): value is PendingRegistration {
-  if (!value || typeof value !== "object") return false;
-  const registration = value as Partial<PendingRegistration>;
-  return (
-    (registration.role === "student" || registration.role === "tutor") &&
-    typeof registration.name === "string" &&
-    typeof registration.email === "string" &&
-    Boolean(registration.details) &&
-    typeof registration.details === "object"
-  );
-}
-
 function Field({
   label,
   type = "text",
@@ -700,49 +688,7 @@ function AuthPageContent() {
         console.error("Failed to load profile after authentication", existingProfileError);
       }
 
-      let profile = existingProfile;
-      if (!profile) {
-        const pendingRegistration = data.user.user_metadata?.pending_registration;
-        if (isPendingRegistration(pendingRegistration)) {
-          const { error: registrationError } = await supabase.rpc("register_current_user_profile", {
-            p_role: pendingRegistration.role,
-            p_name: pendingRegistration.name,
-            p_email: pendingRegistration.email,
-            p_details: pendingRegistration.details,
-          });
-
-          if (registrationError) {
-            console.error("register_current_user_profile failed after email confirmation", registrationError);
-            if (!cancelled) {
-              setError(
-                isDuplicateEmailError(registrationError)
-                  ? t("auth.emailAlreadyRegistered")
-                  : registrationError.message
-              );
-              setCheckingSession(false);
-            }
-            return;
-          }
-
-          profile = {
-            uid: data.user.id,
-            role: pendingRegistration.role,
-            name: pendingRegistration.name,
-            email: pendingRegistration.email,
-            approved: null,
-          };
-
-          const { error: metadataError } = await supabase.auth.updateUser({
-            data: {
-              name: pendingRegistration.name,
-              pending_registration: null,
-            },
-          });
-          if (metadataError) {
-            console.error("Failed to clear completed registration metadata", metadataError);
-          }
-        }
-      }
+      const profile = existingProfile;
 
       if (!profile || cancelled) {
         if (!cancelled) setCheckingSession(false);
@@ -882,29 +828,7 @@ function AuthPageContent() {
                   return;
                 }
 
-                let profile = existingProfile;
-                const pendingRegistration = user.user_metadata?.pending_registration;
-                if (!profile && isPendingRegistration(pendingRegistration)) {
-                  const { error: registrationError } = await supabase.rpc("register_current_user_profile", {
-                    p_role: pendingRegistration.role,
-                    p_name: pendingRegistration.name,
-                    p_email: pendingRegistration.email,
-                    p_details: pendingRegistration.details,
-                  });
-                  if (registrationError) {
-                    await supabase.auth.signOut();
-                    setError(isDuplicateEmailError(registrationError) ? t("auth.emailAlreadyRegistered") : registrationError.message);
-                    return;
-                  }
-                  profile = {
-                    uid: user.id,
-                    role: pendingRegistration.role,
-                    name: pendingRegistration.name,
-                    email: pendingRegistration.email,
-                    approved: null,
-                  };
-                  void supabase.auth.updateUser({ data: { name: pendingRegistration.name, pending_registration: null } });
-                }
+                const profile = existingProfile;
 
                 if (!profile) {
                   await supabase.auth.signOut();
@@ -1029,36 +953,12 @@ function AuthPageContent() {
                 }
 
                 const userId = data.user?.id;
-                const hasSession = Boolean(data.session);
-
                 if (!userId) {
                   setError(t("auth.authUserError"));
                   return;
                 }
 
-                if (!hasSession) {
-                  router.push(`/check-email?email=${encodeURIComponent(normalizedEmail)}`);
-                  return;
-                }
-
-                const { error: profileError } = await supabase.rpc("register_current_user_profile", {
-                  p_role: registrationRole,
-                  p_name: name,
-                  p_email: normalizedEmail,
-                  p_details: details,
-                });
-
-                if (profileError) {
-                  console.error("register_current_user_profile failed", profileError);
-                  setError(
-                    isDuplicateEmailError(profileError)
-                      ? t("auth.emailAlreadyRegistered")
-                      : profileError.message
-                  );
-                  return;
-                }
-
-                await supabase.auth.signOut();
+                if (data.session) await supabase.auth.signOut();
                 router.push(`/check-email?email=${encodeURIComponent(normalizedEmail)}`);
               }
             }}
