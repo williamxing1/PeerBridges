@@ -98,6 +98,16 @@ function formatClassTime(date: Date, lang: string) {
   });
 }
 
+function defaultAssignmentDueDate(now = new Date()) {
+  const dueDate = new Date(now);
+  dueDate.setDate(dueDate.getDate() + 7);
+
+  const year = dueDate.getFullYear();
+  const month = String(dueDate.getMonth() + 1).padStart(2, "0");
+  const day = String(dueDate.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function getClassMinutes(cls: ClassRow) {
   return cls.duration;
 }
@@ -130,6 +140,7 @@ export function EvaluationPage({ classId }: { classId: string }) {
   const [prepMinutes, setPrepMinutes] = useState("");
   const [evaluationMinutes, setEvaluationMinutes] = useState("");
   const [assignments, setAssignments] = useState<AssignmentDraft[]>([]);
+  const [editing, setEditing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
 
@@ -200,6 +211,7 @@ export function EvaluationPage({ classId }: { classId: string }) {
           .from("assignments")
           .select("assignment_id, lesson_id, student_uid, teacher_uid, name, description, due_date")
           .eq("lesson_id", classId)
+          .eq("deleted", false)
           .order("due_date", { ascending: true }),
         supabase
           .from("volunteer_records")
@@ -276,14 +288,16 @@ export function EvaluationPage({ classId }: { classId: string }) {
   function updateAssignment(index: number, field: keyof AssignmentDraft, value: string) {
     setAssignments((current) =>
       current.map((assignment, assignmentIndex) =>
-        assignmentIndex === index ? { ...assignment, [field]: value } : assignment
+        assignmentIndex === index && !assignment.id ? { ...assignment, [field]: value } : assignment
       )
     );
   }
 
   function addAssignment() {
     setAssignments((current) =>
-      current.length >= 3 ? current : [...current, { name: "", description: "", dueDate: "" }]
+      current.length >= 3
+        ? current
+        : [...current, { name: "", description: "", dueDate: defaultAssignmentDueDate() }]
     );
   }
 
@@ -336,6 +350,7 @@ export function EvaluationPage({ classId }: { classId: string }) {
       p_prep_minutes: parsedPrepMinutes,
       p_evaluation_minutes: parsedEvaluationMinutes,
       p_assignments: assignments.map((assignment) => ({
+        assignment_id: assignment.id ?? null,
         name: assignment.name.trim(),
         description: assignment.description.trim(),
         due_date: assignment.dueDate,
@@ -382,15 +397,26 @@ export function EvaluationPage({ classId }: { classId: string }) {
             {t("dashboard.backToDashboard")}
           </Link>
           <h2 className="text-foreground">
-            {evaluationClass.evaluationCompleted ? t("dashboard.myEvaluation") : t("dashboard.completeEvaluation")}
+            {evaluationClass.evaluationCompleted
+              ? editing ? t("dashboard.editEvaluation") : t("dashboard.myEvaluation")
+              : t("dashboard.completeEvaluation")}
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
             {evaluationClass.student} · {evaluationClass.date} · {evaluationClass.time}
           </p>
         </div>
+        {evaluationClass.evaluationCompleted && !editing && (
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            className="inline-flex w-fit items-center justify-center rounded-xl border border-border px-4 py-2.5 text-sm text-card-foreground transition-colors hover:bg-accent"
+          >
+            {t("dashboard.editEvaluation")}
+          </button>
+        )}
       </div>
 
-      {evaluationClass.evaluationCompleted ? (
+      {evaluationClass.evaluationCompleted && !editing ? (
         <EvaluationSummary
           classDescription={classDescription}
           rating={rating}
@@ -410,7 +436,7 @@ export function EvaluationPage({ classId }: { classId: string }) {
       >
         <section className="rounded-2xl border border-border bg-card p-5">
           <label className="block">
-            <span className="text-sm text-card-foreground">{t("dashboard.classDescription")}</span>
+            <span className="text-sm text-card-foreground">{t("dashboard.whatDidYouDoInClass")}</span>
             <textarea
               required
               value={classDescription}
@@ -463,6 +489,9 @@ export function EvaluationPage({ classId }: { classId: string }) {
             <div>
               <p className="text-sm text-card-foreground">{t("dashboard.assignmentSection")}</p>
               <p className="mt-1 text-xs text-muted-foreground">{t("dashboard.assignmentsOptional")}</p>
+              {evaluationClass.evaluationCompleted && (
+                <p className="mt-1 text-xs text-muted-foreground">{t("dashboard.existingAssignmentsLocked")}</p>
+              )}
             </div>
             <button
               type="button"
@@ -499,20 +528,22 @@ export function EvaluationPage({ classId }: { classId: string }) {
                       <span className="text-xs text-muted-foreground">{t("dashboard.assignmentTitle")}</span>
                       <input
                         required
+                        readOnly={Boolean(assignment.id)}
                         value={assignment.name}
                         onChange={(event) => updateAssignment(index, "name", event.target.value)}
                         placeholder={t("dashboard.assignmentName", { number: index + 1 })}
-                        className="mt-1 h-11 w-full rounded-xl border border-border bg-card px-3 text-sm text-foreground outline-none transition placeholder:text-muted-foreground/70 focus:border-primary/40"
+                        className={`mt-1 h-11 w-full rounded-xl border border-border px-3 text-sm text-foreground outline-none transition placeholder:text-muted-foreground/70 focus:border-primary/40 ${assignment.id ? "bg-muted" : "bg-card"}`}
                       />
                     </label>
                     <label className="block">
                       <span className="text-xs text-muted-foreground">{t("dashboard.assignmentDue")}</span>
                       <input
                         required
+                        readOnly={Boolean(assignment.id)}
                         type="date"
                         value={assignment.dueDate}
                         onChange={(event) => updateAssignment(index, "dueDate", event.target.value)}
-                        className="mt-1 h-11 w-full rounded-xl border border-border bg-card px-3 text-sm text-foreground outline-none transition focus:border-primary/40"
+                        className={`mt-1 h-11 w-full rounded-xl border border-border px-3 text-sm text-foreground outline-none transition focus:border-primary/40 ${assignment.id ? "bg-muted" : "bg-card"}`}
                       />
                       <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
                         {assignment.dueDate
@@ -524,11 +555,12 @@ export function EvaluationPage({ classId }: { classId: string }) {
                   <label className="mt-4 block">
                     <span className="text-xs text-muted-foreground">{t("dashboard.assignmentDescriptionOptional")}</span>
                     <textarea
+                      readOnly={Boolean(assignment.id)}
                       value={assignment.description}
                       onChange={(event) => updateAssignment(index, "description", event.target.value)}
                       rows={4}
                       placeholder={t("dashboard.assignmentDescription", { number: index + 1 })}
-                      className="mt-1 w-full resize-y rounded-xl border border-border bg-card px-3 py-3 text-sm text-foreground outline-none transition placeholder:text-muted-foreground/70 focus:border-primary/40"
+                      className={`mt-1 w-full resize-y rounded-xl border border-border px-3 py-3 text-sm text-foreground outline-none transition placeholder:text-muted-foreground/70 focus:border-primary/40 ${assignment.id ? "bg-muted" : "bg-card"}`}
                     />
                   </label>
                 </div>
@@ -594,7 +626,9 @@ export function EvaluationPage({ classId }: { classId: string }) {
           disabled={submitting || totalVolunteerMinutes > 120}
           className="w-full rounded-xl bg-primary px-5 py-3 text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50 sm:w-fit"
         >
-          {submitting ? t("common.saving") : t("dashboard.submitEvaluation")}
+          {submitting
+            ? t("common.saving")
+            : t(evaluationClass.evaluationCompleted ? "dashboard.saveEvaluation" : "dashboard.submitEvaluation")}
         </button>
       </form>
       )}

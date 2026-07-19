@@ -41,6 +41,7 @@ const AVAILABILITY_COLUMNS = (["sat", "sun"] as Day[]).flatMap((day) =>
   SLOT_COLUMN_SUFFIXES.map((suffix) => `${day}_${suffix}`)
 );
 const storedUserKey = "tutorflow-user";
+const MAX_STUDENT_CLASSES_PER_WEEKEND = 1;
 
 function formatDate(d: Date, lang: string = "en") {
   return d.toLocaleDateString(lang === "zh" ? "zh-CN" : "en-US", { weekday: "long", month: "long", day: "numeric" });
@@ -830,7 +831,7 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
   const [weekendLoading, setWeekendLoading] = useState(false);
   const [weekendOffset, setWeekendOffset] = useState(0);
   const [availabilitySubmitted, setAvailabilitySubmitted] = useState(false);
-  const [remainingClasses, setRemainingClasses] = useState(3);
+  const [remainingClasses, setRemainingClasses] = useState(MAX_STUDENT_CLASSES_PER_WEEKEND);
   const [strikeStatus, setStrikeStatus] = useState(emptyStrikeStatus);
   const [bookings, setBookings] = useState<Record<string, StudentBooking>>({});
   const [selectedBookingKey, setSelectedBookingKey] = useState<string | null>(null);
@@ -995,7 +996,7 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
       setAvailabilitySubmitted(false);
 
       if (!selectedTutorId) {
-        setRemainingClasses(3);
+        setRemainingClasses(MAX_STUDENT_CLASSES_PER_WEEKEND);
         setBookings({});
         setSelectedBookingKey(null);
         setWeekendLoading(false);
@@ -1034,7 +1035,7 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
       const occupancy = (occupancyRows ?? []) as ScheduleOccupancyRow[];
       const remaining = Math.max(
         0,
-        3 - occupancy.filter((row) => row.is_caller_class).length
+        MAX_STUDENT_CLASSES_PER_WEEKEND - occupancy.filter((row) => row.is_caller_class).length
       );
       const availableAfterBookings = availabilityRow
         ? removeBookedSlots(
@@ -1422,7 +1423,10 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
               </p>
               {!weekendLoading && (
                 <p className="mt-1 text-xs font-medium text-primary">
-                  {t("schedule.scheduledWeekendClasses", { count: 3 - remainingClasses })}
+                  {t("schedule.scheduledWeekendClasses", {
+                    count: MAX_STUDENT_CLASSES_PER_WEEKEND - remainingClasses,
+                    limit: MAX_STUDENT_CLASSES_PER_WEEKEND,
+                  })}
                 </p>
               )}
             </div>

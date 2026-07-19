@@ -9,6 +9,7 @@ import { StudentSchedulePage } from "./components/StudentSchedulePage";
 import { TutorSchedulePage } from "./components/TutorSchedulePage";
 import { VolunteerRecordPage } from "./components/VolunteerRecordPage";
 import { AdminDashboardPage, AdminIndividualQueryPage } from "./components/AdminDashboardPage";
+import { ApproveNewUsersPage } from "./components/ApproveNewUsersPage";
 import { ManageMediaPage, MediaListPage } from "./components/MediaPages";
 import { CommunicationsPage } from "./components/CommunicationsPage";
 import { StudentSpeakingSamplesPage } from "./components/SpeakingSamplesPage";
@@ -45,6 +46,7 @@ import {
   Settings,
   LogOut,
   User,
+  UserCheck,
   Menu,
   X,
   ChevronRight,
@@ -1745,7 +1747,7 @@ function PersonProfileDialog({
   );
 }
 
-function ClassCard({
+export function ClassCard({
   cls,
   completed,
   feedbackLabel,
@@ -1804,29 +1806,47 @@ function ClassCard({
               )}
             </p>
           </div>
-          {completed && (
-            <CheckCircle2 size={16} className="text-emerald-500 shrink-0 mt-0.5" />
-          )}
+          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] ${
+            completed ? "bg-emerald-50 text-emerald-700" : "bg-blue-50 text-blue-700"
+          }`}>
+            {t(completed ? "dashboard.completed" : "dashboard.upcoming")}
+          </span>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            if (cls.displayPersonUid && cls.displayPersonRole) {
-              setProfilePerson({
-                uid: cls.displayPersonUid,
-                role: cls.displayPersonRole,
-                name: displayPersonName,
-              });
-            }
-          }}
-          className="flex w-fit items-center gap-2.5 rounded-lg text-left transition-colors hover:bg-accent"
-        >
-          <BlankAvatar size={32} />
-          <div className="flex items-center gap-1.5">
-            <p className="text-sm text-card-foreground">{displayPersonName}</p>
-            <ChevronRight size={13} className="text-muted-foreground" />
-          </div>
-        </button>
+        {cls.displayPersonUid && cls.displayPersonRole === "student" ? (
+          <Link
+            href={`/view-students/${cls.displayPersonUid}`}
+            className="flex w-fit items-center gap-2.5 rounded-lg px-1 py-1 text-left transition-colors hover:bg-accent"
+          >
+            <BlankAvatar size={32} />
+            <div>
+              <p className="text-sm text-card-foreground">{displayPersonName}</p>
+              <p className="flex items-center gap-1 text-xs font-medium text-primary">
+                {t("viewStudents.openStudent")}
+                <ChevronRight size={13} />
+              </p>
+            </div>
+          </Link>
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              if (cls.displayPersonUid && cls.displayPersonRole) {
+                setProfilePerson({
+                  uid: cls.displayPersonUid,
+                  role: cls.displayPersonRole,
+                  name: displayPersonName,
+                });
+              }
+            }}
+            className="flex w-fit items-center gap-2.5 rounded-lg text-left transition-colors hover:bg-accent"
+          >
+            <BlankAvatar size={32} />
+            <div className="flex items-center gap-1.5">
+              <p className="text-sm text-card-foreground">{displayPersonName}</p>
+              <ChevronRight size={13} className="text-muted-foreground" />
+            </div>
+          </button>
+        )}
         <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
           <span className="flex items-center gap-1.5">
             <CalendarDays size={14} />
@@ -2037,8 +2057,10 @@ function TopNav({
 
 function Sidebar({
   active,
+  requiredRole,
   dashboardHref,
   individualQueryHref,
+  approveUsersHref,
   scheduleHref,
   scheduleLabel,
   recordHref,
@@ -2052,8 +2074,10 @@ function Sidebar({
   onClose,
 }: {
   active: string;
+  requiredRole?: AccountRole;
   dashboardHref: string;
   individualQueryHref?: string;
+  approveUsersHref?: string;
   scheduleHref?: string | null;
   scheduleLabel: string;
   recordHref?: string;
@@ -2070,8 +2094,14 @@ function Sidebar({
   const router = useRouter();
   const items = [
     { id: "dashboard", href: dashboardHref, icon: LayoutDashboard, label: t("common.dashboard") },
+    ...(requiredRole === "tutor"
+      ? [{ id: "viewStudents", href: "/view-students", icon: Users, label: t("viewStudents.title") }]
+      : []),
     ...(individualQueryHref
       ? [{ id: "individualQuery", href: individualQueryHref, icon: User, label: t("admin.individualQuery") }]
+      : []),
+    ...(approveUsersHref
+      ? [{ id: "approveUsers", href: approveUsersHref, icon: UserCheck, label: t("admin.approveNewUsers") }]
       : []),
     ...(scheduleHref
       ? [{ id: "schedule", href: scheduleHref, icon: CalendarDays, label: scheduleLabel }]
@@ -2530,26 +2560,40 @@ function UpcomingClassHero({
             ))}
           </div>
         )}
-        <button
-          type="button"
-          onClick={() => {
-            if (cls.displayPersonUid && cls.displayPersonRole) {
-              setProfilePerson({ uid: cls.displayPersonUid, role: cls.displayPersonRole, name: displayPersonName });
-            }
-          }}
-          className="flex w-fit items-center gap-3 rounded-lg text-left transition-colors hover:bg-accent"
-        >
-          <BlankAvatar size={36} />
-          <div>
-            <p className="flex items-center gap-1.5 text-sm text-card-foreground">
-              {displayPersonName}
-              <ChevronRight size={13} className="text-muted-foreground" />
-            </p>
-            <p className="text-xs text-muted-foreground">
-              {cls.displayPersonRole === "student" ? t("common.student") : t("dashboard.yourTutor")}
-            </p>
-          </div>
-        </button>
+        {cls.displayPersonUid && cls.displayPersonRole === "student" ? (
+          <Link
+            href={`/view-students/${cls.displayPersonUid}`}
+            className="flex w-fit items-center gap-3 rounded-lg px-1 py-1 text-left transition-colors hover:bg-accent"
+          >
+            <BlankAvatar size={36} />
+            <div>
+              <p className="text-sm text-card-foreground">{displayPersonName}</p>
+              <p className="flex items-center gap-1 text-xs font-medium text-primary">
+                {t("viewStudents.openStudent")}
+                <ChevronRight size={13} />
+              </p>
+            </div>
+          </Link>
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              if (cls.displayPersonUid && cls.displayPersonRole) {
+                setProfilePerson({ uid: cls.displayPersonUid, role: cls.displayPersonRole, name: displayPersonName });
+              }
+            }}
+            className="flex w-fit items-center gap-3 rounded-lg text-left transition-colors hover:bg-accent"
+          >
+            <BlankAvatar size={36} />
+            <div>
+              <p className="flex items-center gap-1.5 text-sm text-card-foreground">
+                {displayPersonName}
+                <ChevronRight size={13} className="text-muted-foreground" />
+              </p>
+              <p className="text-xs text-muted-foreground">{t("dashboard.yourTutor")}</p>
+            </div>
+          </button>
+        )}
       </div>
       <div className="grid w-full shrink-0 gap-2 sm:w-48">
         <button
@@ -2782,26 +2826,40 @@ function ClassesCard({
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {recurringClasses.map((recurringClass) => (
                 <div key={recurringClass.id} className="rounded-xl border border-border bg-background p-4">
-                  <button
-                    type="button"
-                    onClick={() => setProfilePerson({
-                      uid: recurringClass.personUid,
-                      role: recurringClass.personRole,
-                      name: recurringClass.personName,
-                    })}
-                    className="flex w-fit items-center gap-2.5 rounded-lg text-left transition-colors hover:bg-accent"
-                  >
-                    <BlankAvatar size={32} />
-                    <div>
-                      <p className="flex items-center gap-1.5 text-sm font-medium text-card-foreground">
-                        {recurringClass.personName}
-                        <ChevronRight size={13} className="text-muted-foreground" />
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {attendee === "teacher" ? t("common.student") : t("common.tutor")}
-                      </p>
-                    </div>
-                  </button>
+                  {attendee === "teacher" && recurringClass.personRole === "student" ? (
+                    <Link
+                      href={`/view-students/${recurringClass.personUid}`}
+                      className="flex w-fit items-center gap-2.5 rounded-lg px-1 py-1 text-left transition-colors hover:bg-accent"
+                    >
+                      <BlankAvatar size={32} />
+                      <div>
+                        <p className="text-sm font-medium text-card-foreground">{recurringClass.personName}</p>
+                        <p className="flex items-center gap-1 text-xs font-medium text-primary">
+                          {t("viewStudents.openStudent")}
+                          <ChevronRight size={13} />
+                        </p>
+                      </div>
+                    </Link>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setProfilePerson({
+                        uid: recurringClass.personUid,
+                        role: recurringClass.personRole,
+                        name: recurringClass.personName,
+                      })}
+                      className="flex w-fit items-center gap-2.5 rounded-lg text-left transition-colors hover:bg-accent"
+                    >
+                      <BlankAvatar size={32} />
+                      <div>
+                        <p className="flex items-center gap-1.5 text-sm font-medium text-card-foreground">
+                          {recurringClass.personName}
+                          <ChevronRight size={13} className="text-muted-foreground" />
+                        </p>
+                        <p className="text-xs text-muted-foreground">{t("common.tutor")}</p>
+                      </div>
+                    </button>
+                  )}
                   <p className="mt-2 text-sm text-muted-foreground">
                     {t("dashboard.recurringSchedule", { day: recurringClass.day, time: recurringClass.time })}
                   </p>
@@ -3028,6 +3086,7 @@ export function StudentDashboardPage({ lang }: { lang: string }) {
           .select("assignment_id, lesson_id, student_uid, teacher_uid, name, description, due_date, complete")
           .eq("student_uid", studentUid)
           .eq("complete", false)
+          .eq("deleted", false)
           .order("due_date", { ascending: true }),
       ]);
       const { status: strikeStatus, error: strikeStatusError } = strikeStatusResult;
@@ -3956,6 +4015,7 @@ export function AppShell({
   user = STUDENT,
   dashboardHref = "/student-dashboard",
   individualQueryHref,
+  approveUsersHref,
   scheduleHref = "/student-schedule",
   recordHref,
   trainingHref,
@@ -3965,12 +4025,14 @@ export function AppShell({
   manageMediaHref,
   communicationsHref,
   requiredRole,
+  showAccessDeniedOnRoleMismatch = false,
 }: {
-  activePage: "dashboard" | "individualQuery" | "schedule" | "record" | "training" | "awards" | "studentMaterials" | "speakingSamples" | "manageMedia" | "communications";
+  activePage: "dashboard" | "individualQuery" | "approveUsers" | "viewStudents" | "schedule" | "record" | "training" | "awards" | "studentMaterials" | "speakingSamples" | "manageMedia" | "communications";
   children: (lang: string) => ReactNode;
   user?: typeof STUDENT;
   dashboardHref?: string;
   individualQueryHref?: string;
+  approveUsersHref?: string;
   scheduleHref?: string | null;
   recordHref?: string;
   trainingHref?: string;
@@ -3980,6 +4042,7 @@ export function AppShell({
   manageMediaHref?: string;
   communicationsHref?: string;
   requiredRole?: AccountRole;
+  showAccessDeniedOnRoleMismatch?: boolean;
 }) {
   return (
     <Suspense fallback={<LoadingFallback />}>
@@ -3988,6 +4051,7 @@ export function AppShell({
         user={user}
         dashboardHref={dashboardHref}
         individualQueryHref={individualQueryHref}
+        approveUsersHref={approveUsersHref}
         scheduleHref={scheduleHref}
         recordHref={recordHref}
         trainingHref={trainingHref}
@@ -3997,6 +4061,7 @@ export function AppShell({
         manageMediaHref={manageMediaHref}
         communicationsHref={communicationsHref}
         requiredRole={requiredRole}
+        showAccessDeniedOnRoleMismatch={showAccessDeniedOnRoleMismatch}
       >
         {children}
       </AppShellContent>
@@ -4010,6 +4075,7 @@ function AppShellContent({
   user,
   dashboardHref,
   individualQueryHref,
+  approveUsersHref,
   scheduleHref,
   recordHref,
   trainingHref,
@@ -4019,12 +4085,14 @@ function AppShellContent({
   manageMediaHref,
   communicationsHref,
   requiredRole,
+  showAccessDeniedOnRoleMismatch,
 }: {
-  activePage: "dashboard" | "individualQuery" | "schedule" | "record" | "training" | "awards" | "studentMaterials" | "speakingSamples" | "manageMedia" | "communications";
+  activePage: "dashboard" | "individualQuery" | "approveUsers" | "viewStudents" | "schedule" | "record" | "training" | "awards" | "studentMaterials" | "speakingSamples" | "manageMedia" | "communications";
   children: (lang: string) => ReactNode;
   user: typeof STUDENT;
   dashboardHref: string;
   individualQueryHref?: string;
+  approveUsersHref?: string;
   scheduleHref?: string | null;
   recordHref?: string;
   trainingHref?: string;
@@ -4034,6 +4102,7 @@ function AppShellContent({
   manageMediaHref?: string;
   communicationsHref?: string;
   requiredRole?: AccountRole;
+  showAccessDeniedOnRoleMismatch: boolean;
 }) {
   const { lang, t } = useLanguage();
   const router = useRouter();
@@ -4096,7 +4165,7 @@ function AppShellContent({
 
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
-        .select("uid, role, name, email, notification_method, rules_acknowledged_at, time_zone")
+        .select("uid, role, name, email, approved, notification_method, rules_acknowledged_at, time_zone")
         .eq("uid", authData.user.id)
         .maybeSingle();
 
@@ -4114,7 +4183,21 @@ function AppShellContent({
         return;
       }
 
+      if (profile.role !== "admin" && profile.approved !== true) {
+        await supabase.auth.signOut();
+        clearStoredAuthState();
+        router.replace(`/?accountStatus=${profile.approved === false ? "rejected" : "pending"}`);
+        return;
+      }
+
       if (profile.role !== requiredRole) {
+        if (showAccessDeniedOnRoleMismatch) {
+          if (!cancelled) {
+            setAccessError(t("viewStudents.cannotView"));
+            setAuthChecked(true);
+          }
+          return;
+        }
         await supabase.auth.signOut();
         clearStoredAuthState();
         router.replace(signInPath);
@@ -4173,7 +4256,7 @@ function AppShellContent({
       cancelled = true;
       window.removeEventListener(storedUserUpdatedEvent, handleStoredUserUpdated);
     };
-  }, [pathname, requiredRole, router, searchString]);
+  }, [pathname, requiredRole, router, searchString, showAccessDeniedOnRoleMismatch, t]);
 
   if (!authChecked) {
     return (
@@ -4211,8 +4294,10 @@ function AppShellContent({
       <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
         <Sidebar
           active={activePage}
+          requiredRole={requiredRole}
           dashboardHref={dashboardHref}
           individualQueryHref={individualQueryHref}
+          approveUsersHref={approveUsersHref}
           scheduleHref={scheduleHref}
           scheduleLabel={requiredRole === "tutor" ? t("schedule.setAvailability") : t("schedule.studentTitle")}
           recordHref={recordHref}
@@ -4331,7 +4416,7 @@ export function TutorCommunicationsApp() {
 
 export function AdminApp() {
   return (
-    <AppShell activePage="dashboard" user={ADMIN} dashboardHref="/admin-dashboard" individualQueryHref="/admin-individual-query" scheduleHref={null} manageMediaHref="/admin-media" communicationsHref="/admin-communications" requiredRole="admin">
+    <AppShell activePage="dashboard" user={ADMIN} dashboardHref="/admin-dashboard" individualQueryHref="/admin-individual-query" approveUsersHref="/approve-new-users" scheduleHref={null} manageMediaHref="/admin-media" communicationsHref="/admin-communications" requiredRole="admin">
       {(lang) => <AdminDashboardPage lang={lang} />}
     </AppShell>
   );
@@ -4339,7 +4424,7 @@ export function AdminApp() {
 
 export function AdminIndividualQueryApp() {
   return (
-    <AppShell activePage="individualQuery" user={ADMIN} dashboardHref="/admin-dashboard" individualQueryHref="/admin-individual-query" scheduleHref={null} manageMediaHref="/admin-media" communicationsHref="/admin-communications" requiredRole="admin">
+    <AppShell activePage="individualQuery" user={ADMIN} dashboardHref="/admin-dashboard" individualQueryHref="/admin-individual-query" approveUsersHref="/approve-new-users" scheduleHref={null} manageMediaHref="/admin-media" communicationsHref="/admin-communications" requiredRole="admin">
       {() => <AdminIndividualQueryPage />}
     </AppShell>
   );
@@ -4347,7 +4432,7 @@ export function AdminIndividualQueryApp() {
 
 export function ManageMediaApp() {
   return (
-    <AppShell activePage="manageMedia" user={ADMIN} dashboardHref="/admin-dashboard" individualQueryHref="/admin-individual-query" scheduleHref={null} manageMediaHref="/admin-media" communicationsHref="/admin-communications" requiredRole="admin">
+    <AppShell activePage="manageMedia" user={ADMIN} dashboardHref="/admin-dashboard" individualQueryHref="/admin-individual-query" approveUsersHref="/approve-new-users" scheduleHref={null} manageMediaHref="/admin-media" communicationsHref="/admin-communications" requiredRole="admin">
       {() => <ManageMediaPage />}
     </AppShell>
   );
@@ -4355,8 +4440,16 @@ export function ManageMediaApp() {
 
 export function AdminCommunicationsApp() {
   return (
-    <AppShell activePage="communications" user={ADMIN} dashboardHref="/admin-dashboard" individualQueryHref="/admin-individual-query" scheduleHref={null} manageMediaHref="/admin-media" communicationsHref="/admin-communications" requiredRole="admin">
+    <AppShell activePage="communications" user={ADMIN} dashboardHref="/admin-dashboard" individualQueryHref="/admin-individual-query" approveUsersHref="/approve-new-users" scheduleHref={null} manageMediaHref="/admin-media" communicationsHref="/admin-communications" requiredRole="admin">
       {() => <CommunicationsPage viewerRole="admin" />}
+    </AppShell>
+  );
+}
+
+export function ApproveNewUsersApp() {
+  return (
+    <AppShell activePage="approveUsers" user={ADMIN} dashboardHref="/admin-dashboard" individualQueryHref="/admin-individual-query" approveUsersHref="/approve-new-users" scheduleHref={null} manageMediaHref="/admin-media" communicationsHref="/admin-communications" requiredRole="admin">
+      {() => <ApproveNewUsersPage />}
     </AppShell>
   );
 }

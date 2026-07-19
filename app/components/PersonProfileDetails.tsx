@@ -24,7 +24,7 @@ function labelFromColumn(column: string) {
     .join(" ");
 }
 
-export function PersonProfileDetails({ person }: { person: ProfilePerson | null }) {
+export function PersonProfileDetails({ person, showAdministrativeFields = false }: { person: ProfilePerson | null; showAdministrativeFields?: boolean }) {
   const { t, lang } = useLanguage();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -48,7 +48,7 @@ export function PersonProfileDetails({ person }: { person: ProfilePerson | null 
       const [baseProfileResult, roleProfileResult] = await Promise.all([
         supabase
           .from("profiles")
-          .select("name, student_wechat_id, parent_wechat_id, student_email, parent_email, communication_recipient, preferred_communication")
+          .select("name, email, created_at, student_wechat_id, parent_wechat_id, student_email, parent_email, communication_recipient, preferred_communication, notification_method, time_zone, rules_acknowledged_at")
           .eq("uid", person.uid)
           .maybeSingle(),
         supabase
@@ -95,6 +95,16 @@ export function PersonProfileDetails({ person }: { person: ProfilePerson | null 
       if (!cancelled) {
         setDetails([
           { label: t("common.name"), value: baseProfile.name },
+          ...(showAdministrativeFields
+            ? [
+                { label: t("admin.accountId"), value: person.uid },
+                { label: t("admin.loginEmail"), value: baseProfile.email },
+                { label: t("admin.registeredAt"), value: new Date(baseProfile.created_at).toLocaleString(lang === "zh" ? "zh-CN" : "en-US", { dateStyle: "medium", timeStyle: "short" }) },
+                { label: t("admin.timeZone"), value: baseProfile.time_zone || t("common.none") },
+                { label: t("admin.rulesAcknowledged"), value: baseProfile.rules_acknowledged_at ? new Date(baseProfile.rules_acknowledged_at).toLocaleString(lang === "zh" ? "zh-CN" : "en-US", { dateStyle: "medium", timeStyle: "short" }) : t("common.no") },
+                { label: t("admin.notificationMethod"), value: baseProfile.notification_method ? t(`auth.notificationMethod.${baseProfile.notification_method}` as "auth.notificationMethod.wechat" | "auth.notificationMethod.email" | "auth.notificationMethod.phone") : t("common.none") },
+              ]
+            : []),
           ...(baseProfile.communication_recipient
             ? [{
                 label: t("auth.communicationRecipient"),
@@ -142,7 +152,7 @@ export function PersonProfileDetails({ person }: { person: ProfilePerson | null 
     return () => {
       cancelled = true;
     };
-  }, [person, t, lang]);
+  }, [person, t, lang, showAdministrativeFields]);
 
   if (!person) {
     return <p className="text-sm text-muted-foreground">{t("admin.selectPersonPrompt")}</p>;

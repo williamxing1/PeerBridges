@@ -59,6 +59,10 @@ function isDuplicateEmailError(error: { code?: string; message: string }) {
   return error.code === "23505" || isAlreadyRegisteredError(error.message);
 }
 
+function isEmailNotConfirmedError(message: string) {
+  return message.toLowerCase().includes("email not confirmed");
+}
+
 function isPendingRegistration(value: unknown): value is PendingRegistration {
   if (!value || typeof value !== "object") return false;
   const registration = value as Partial<PendingRegistration>;
@@ -80,6 +84,7 @@ function Field({
   inputMode,
   pattern,
   required = true,
+  showRequiredNote = true,
   value,
   onChange,
 }: {
@@ -91,6 +96,7 @@ function Field({
   inputMode?: "email" | "numeric" | "search" | "tel" | "text" | "url";
   pattern?: string;
   required?: boolean;
+  showRequiredNote?: boolean;
   value: string;
   onChange: (value: string) => void;
 }) {
@@ -100,7 +106,9 @@ function Field({
 
   return (
     <label className="block">
-      <span className="text-sm font-medium text-card-foreground">{label}</span>
+      <span className="text-sm font-medium text-card-foreground">
+        {label}{required && showRequiredNote ? ` (${t("common.required")})` : ""}
+      </span>
       <span className="relative mt-2 block">
         <input
           required={required}
@@ -140,10 +148,15 @@ function TextAreaField({
   value: string;
   onChange: (value: string) => void;
 }) {
+  const { t } = useLanguage();
+
   return (
     <label className="block md:col-span-2">
-      <span className="text-sm font-medium text-card-foreground">{label}</span>
+      <span className="text-sm font-medium text-card-foreground">
+        {label} ({t("common.required")})
+      </span>
       <textarea
+        required
         rows={5}
         maxLength={1000}
         placeholder={placeholder}
@@ -175,9 +188,13 @@ function SelectField({
   required?: boolean;
   getOptionLabel?: (option: string) => string;
 }) {
+  const { t } = useLanguage();
+
   return (
     <label className="block">
-      <span className="text-sm font-medium text-card-foreground">{label}</span>
+      <span className="text-sm font-medium text-card-foreground">
+        {label}{required ? ` (${t("common.required")})` : ""}
+      </span>
       <Select.Root required={required} value={value} onValueChange={onChange}>
         <Select.Trigger className="mt-2 flex h-11 w-full items-center justify-between rounded-xl border border-border bg-background px-3.5 text-sm text-foreground outline-none transition data-[placeholder]:text-muted-foreground focus:border-primary/40 focus:bg-card">
           <Select.Value placeholder={placeholder} />
@@ -221,9 +238,13 @@ function CountrySelect({
   value: string;
   onChange: (value: string) => void;
 }) {
+  const { t } = useLanguage();
+
   return (
     <label className="block">
-      <span className="text-sm font-medium text-card-foreground">{label}</span>
+      <span className="text-sm font-medium text-card-foreground">
+        {label} ({t("common.required")})
+      </span>
       <Select.Root required value={value} onValueChange={onChange}>
         <Select.Trigger className="mt-2 flex h-11 w-full items-center justify-between rounded-xl border border-border bg-background px-3.5 text-sm text-foreground outline-none transition data-[placeholder]:text-muted-foreground focus:border-primary/40 focus:bg-card">
           <Select.Value placeholder={placeholder} />
@@ -340,9 +361,9 @@ type RegisterFieldsProps = LoginFieldsProps & {
 function LoginFields({ t, email, setEmail, password, setPassword, saveCredentials = false, setSaveCredentials }: LoginFieldsProps) {
   return (
     <div className="grid gap-4">
-      <Field label={t("auth.email")} type="email" placeholder={t("auth.emailPlaceholder")} value={email} onChange={setEmail} />
+      <Field label={t("auth.email")} type="email" placeholder={t("auth.emailPlaceholder")} showRequiredNote={false} value={email} onChange={setEmail} />
       <div>
-        <Field label={t("auth.password")} type="password" placeholder={t("auth.enterPassword")} minLength={6} value={password} onChange={setPassword} />
+        <Field label={t("auth.password")} type="password" placeholder={t("auth.enterPassword")} minLength={6} showRequiredNote={false} value={password} onChange={setPassword} />
         <Link
           href="/forgot-password"
           className="mt-2 block w-fit text-sm text-primary transition-colors hover:text-primary/80"
@@ -483,7 +504,7 @@ function RegisterFields({
         <Field label={`${t("auth.referrer")} (${t("common.optional")})`} placeholder={t("auth.referrerPlaceholder")} required={false} value={referrer} onChange={setReferrer} />
         <SelectField label={`${t("auth.trialTeacher")} (${t("common.optional")})`} placeholder={t("auth.selectRecruitingTeacher")} options={teachers} required={false} value={trialTeacher} onChange={setTrialTeacher} />
         <TextAreaField
-          label={`${t("auth.studentIntroduction")} (${t("common.optional")})`}
+          label={t("auth.studentIntroduction")}
           placeholder={t("auth.studentIntroductionPlaceholder")}
           value={studentIntroduction}
           onChange={setStudentIntroduction}
@@ -506,7 +527,7 @@ function RegisterFields({
         <Field label={t("auth.classPassword")} type="password" placeholder={t("auth.classroomPassword")} minLength={4} maxLength={6} inputMode="numeric" pattern="[0-9]{4,6}" value={classPassword} onChange={(value) => setClassPassword(value.replace(/\D/g, "").slice(0, 6))} />
         <Field label={`${t("auth.howFoundOut")} (${t("common.optional")})`} placeholder={t("auth.howFoundOutPlaceholder")} required={false} value={howFoundOut} onChange={setHowFoundOut} />
         <TextAreaField
-          label={`${t("auth.tutorIntroduction")} (${t("common.optional")})`}
+          label={t("auth.tutorIntroduction")}
           placeholder={t("auth.tutorIntroductionPlaceholder")}
           value={tutorIntroduction}
           onChange={setTutorIntroduction}
@@ -562,6 +583,7 @@ function AuthPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirectTo = searchParams.get("redirectTo") || "";
+  const accountStatus = searchParams.get("accountStatus");
   const titleRoleKey = roleOptions.find((option) => option.id === role)?.labelKey;
   const titleRole = titleRoleKey ? t(titleRoleKey) : "";
   const countryOptions = useMemo(() => countryOptionsForLang(lang), [lang]);
@@ -596,6 +618,8 @@ function AuthPageContent() {
     if (normalizedRole === "tutor") {
       return (
         path === "/tutor-dashboard" ||
+        path === "/view-students" ||
+        path.startsWith("/view-students/") ||
         path === "/tutor-schedule" ||
         path === "/volunteer-record" ||
         path === "/training-materials" ||
@@ -607,6 +631,7 @@ function AuthPageContent() {
     }
     return path === "/admin-dashboard"
       || path === "/admin-individual-query"
+      || path === "/approve-new-users"
       || path === "/admin-media"
       || path === "/admin-communications"
       || path.startsWith("/speaking-samples/");
@@ -651,6 +676,11 @@ function AuthPageContent() {
   }, []);
 
   useEffect(() => {
+    if (accountStatus === "pending") setError(t("auth.accountPendingApproval"));
+    if (accountStatus === "rejected") setError(t("auth.accountRejected"));
+  }, [accountStatus, t]);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function redirectExistingSession() {
@@ -662,7 +692,7 @@ function AuthPageContent() {
 
       const { data: existingProfile, error: existingProfileError } = await supabase
         .from("profiles")
-        .select("uid, role, name, email")
+        .select("uid, role, name, email, approved")
         .eq("uid", data.user.id)
         .maybeSingle();
 
@@ -699,6 +729,7 @@ function AuthPageContent() {
             role: pendingRegistration.role,
             name: pendingRegistration.name,
             email: pendingRegistration.email,
+            approved: null,
           };
 
           const { error: metadataError } = await supabase.auth.updateUser({
@@ -715,6 +746,15 @@ function AuthPageContent() {
 
       if (!profile || cancelled) {
         if (!cancelled) setCheckingSession(false);
+        return;
+      }
+
+      if (profile.role !== "admin" && profile.approved !== true) {
+        await supabase.auth.signOut();
+        if (!cancelled) {
+          setError(t(profile.approved === false ? "auth.accountRejected" : "auth.accountPendingApproval"));
+          setCheckingSession(false);
+        }
         return;
       }
 
@@ -742,25 +782,6 @@ function AuthPageContent() {
     );
   }
 
-  function pushRegisteredUser(userId: string) {
-    storeUser({
-      uid: userId,
-      role,
-      name,
-      email: registerEmail.trim(),
-      country,
-      grade,
-      referrer,
-      trialTeacher,
-      school,
-      classLink,
-      classPassword,
-      howFoundOut,
-    });
-
-    router.push(getPostAuthPath(role));
-  }
-
   function hasAllRequiredRegistrationFields() {
     const sharedFields = [
       name,
@@ -780,9 +801,9 @@ function AuthPageContent() {
         : []),
     ];
     const roleFields = role === "student"
-      ? [country, grade]
+      ? [country, grade, studentIntroduction]
       : role === "tutor"
-        ? [school, grade, classLink, classPassword]
+        ? [school, grade, classLink, classPassword, tutorIntroduction]
         : [];
 
     return [...sharedFields, ...communicationFields, ...roleFields].every((value) => value.trim().length > 0);
@@ -843,20 +864,57 @@ function AuthPageContent() {
                 });
 
                 if (error) {
-                  setError(error.message);
+                  setError(isEmailNotConfirmedError(error.message) ? t("auth.emailNotConfirmed") : error.message);
                   return;
                 }
 
                 const user = data.user;
 
-                const { data: profile, error: profileError } = await supabase
+                const { data: existingProfile, error: profileError } = await supabase
                   .from("profiles")
-                  .select("uid, role, name, email")
+                  .select("uid, role, name, email, approved")
                   .eq("uid", user.id)
-                  .single();
+                  .maybeSingle();
 
-                if (profileError || !profile) {
-                  setError(profileError?.message || t("auth.authUserError"));
+                if (profileError) {
+                  await supabase.auth.signOut();
+                  setError(profileError.message);
+                  return;
+                }
+
+                let profile = existingProfile;
+                const pendingRegistration = user.user_metadata?.pending_registration;
+                if (!profile && isPendingRegistration(pendingRegistration)) {
+                  const { error: registrationError } = await supabase.rpc("register_current_user_profile", {
+                    p_role: pendingRegistration.role,
+                    p_name: pendingRegistration.name,
+                    p_email: pendingRegistration.email,
+                    p_details: pendingRegistration.details,
+                  });
+                  if (registrationError) {
+                    await supabase.auth.signOut();
+                    setError(isDuplicateEmailError(registrationError) ? t("auth.emailAlreadyRegistered") : registrationError.message);
+                    return;
+                  }
+                  profile = {
+                    uid: user.id,
+                    role: pendingRegistration.role,
+                    name: pendingRegistration.name,
+                    email: pendingRegistration.email,
+                    approved: null,
+                  };
+                  void supabase.auth.updateUser({ data: { name: pendingRegistration.name, pending_registration: null } });
+                }
+
+                if (!profile) {
+                  await supabase.auth.signOut();
+                  setError(t("auth.authUserError"));
+                  return;
+                }
+
+                if (profile.role !== "admin" && profile.approved !== true) {
+                  await supabase.auth.signOut();
+                  setError(t(profile.approved === false ? "auth.accountRejected" : "auth.accountPendingApproval"));
                   return;
                 }
 
@@ -1000,7 +1058,8 @@ function AuthPageContent() {
                   return;
                 }
 
-                pushRegisteredUser(userId);
+                await supabase.auth.signOut();
+                router.push(`/check-email?email=${encodeURIComponent(normalizedEmail)}`);
               }
             }}
           >

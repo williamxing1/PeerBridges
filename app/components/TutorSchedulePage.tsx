@@ -22,7 +22,7 @@ type Booking = {
   recurringLessonId: string | null;
   virtual: boolean;
 };
-type TutorAvailabilityRow = {
+export type TutorAvailabilityRow = {
   tutor_uid: string;
   weekend_date: string;
 } & Record<string, boolean | string>;
@@ -502,6 +502,39 @@ function DayColumn({
           locked={locked}
         />
       ))}
+    </div>
+  );
+}
+
+export function TutorAvailabilityViewer({
+  weekendDate,
+  availabilityRow,
+}: {
+  weekendDate: string;
+  availabilityRow: TutorAvailabilityRow;
+}) {
+  const { lang, t } = useLanguage();
+  const [year, month, day] = weekendDate.split("-").map(Number);
+  const sat = new Date(year, month - 1, day);
+  const sun = new Date(year, month - 1, day + 1);
+  const { availability } = rowToAvailability(availabilityRow);
+
+  return (
+    <div className="grid gap-4">
+      <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-3 w-3 rounded border border-border bg-card" />
+          {t("common.available")}
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-3 w-3 rounded bg-muted/50" />
+          {t("common.unavailable")}
+        </span>
+      </div>
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <DayColumn day="sat" date={sat} availability={availability} bookings={{}} onToggle={() => undefined} locked />
+        <DayColumn day="sun" date={sun} availability={availability} bookings={{}} onToggle={() => undefined} locked />
+      </div>
     </div>
   );
 }
