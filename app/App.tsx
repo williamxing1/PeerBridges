@@ -2094,6 +2094,9 @@ function Sidebar({
   const router = useRouter();
   const items = [
     { id: "dashboard", href: dashboardHref, icon: LayoutDashboard, label: t("common.dashboard") },
+    ...(scheduleHref
+      ? [{ id: "schedule", href: scheduleHref, icon: CalendarDays, label: scheduleLabel }]
+      : []),
     ...(requiredRole === "tutor"
       ? [{ id: "viewStudents", href: "/view-students", icon: Users, label: t("viewStudents.title") }]
       : []),
@@ -2102,9 +2105,6 @@ function Sidebar({
       : []),
     ...(approveUsersHref
       ? [{ id: "approveUsers", href: approveUsersHref, icon: UserCheck, label: t("admin.approveNewUsers") }]
-      : []),
-    ...(scheduleHref
-      ? [{ id: "schedule", href: scheduleHref, icon: CalendarDays, label: scheduleLabel }]
       : []),
     ...(recordHref
       ? [{ id: "record", href: recordHref, icon: FileText, label: t("common.volunteerRecord") }]

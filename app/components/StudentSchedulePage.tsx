@@ -960,21 +960,23 @@ export function StudentSchedulePage({ lang }: { lang: string }) {
       }
 
       if (!cancelled) {
-        setTutors(tutorProfileRows.map((profile) => ({
-          id: profile.uid,
-          name: profileNames.get(profile.uid) ?? t("common.tutor"),
-          grade: profile.grade,
-          meetingPassword: profile.meeting_password,
-          tutorWechatId: profileContacts.get(profile.uid)?.student_wechat_id ?? null,
-          parentWechatId: profileContacts.get(profile.uid)?.parent_wechat_id ?? null,
-          tutorEmail: profileContacts.get(profile.uid)?.student_email ?? null,
-          parentEmail: profileContacts.get(profile.uid)?.parent_email ?? null,
-          preferredCommunication: profileContacts.get(profile.uid)?.preferred_communication ?? null,
-          availability: { sat: [], sun: [] },
-          booked: { sat: [], sun: [] },
-        })));
+        setTutors(tutorProfileRows
+          .filter((profile) => profileNames.get(profile.uid) !== "Tutor Test")
+          .map((profile) => ({
+            id: profile.uid,
+            name: profileNames.get(profile.uid) ?? t("common.tutor"),
+            grade: profile.grade,
+            meetingPassword: profile.meeting_password,
+            tutorWechatId: profileContacts.get(profile.uid)?.student_wechat_id ?? null,
+            parentWechatId: profileContacts.get(profile.uid)?.parent_wechat_id ?? null,
+            tutorEmail: profileContacts.get(profile.uid)?.student_email ?? null,
+            parentEmail: profileContacts.get(profile.uid)?.parent_email ?? null,
+            preferredCommunication: profileContacts.get(profile.uid)?.preferred_communication ?? null,
+            availability: { sat: [], sun: [] },
+            booked: { sat: [], sun: [] },
+          })));
         setPastTeachers(Array.from(teacherCounts.entries())
-          .filter(([uid]) => profileNames.has(uid))
+          .filter(([uid]) => profileNames.has(uid) && profileNames.get(uid) !== "Tutor Test")
           .map(([uid, count]) => ({ uid, count, name: profileNames.get(uid) ?? t("common.tutor") }))
           .sort((a, b) => b.count - a.count));
         setLoading(false);

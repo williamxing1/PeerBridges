@@ -6,6 +6,7 @@ import { CheckCircle2, UserCheck, UserX, X } from "lucide-react";
 import { supabase } from "../../lib/supabase/client";
 import { countryLabelForValue } from "../data/countries";
 import { useLanguage, type TranslationKey } from "../i18n";
+import { dispatchReminderEmails } from "../lib/reminderEmails";
 
 type PendingProfile = {
   uid: string;
@@ -19,7 +20,6 @@ type PendingProfile = {
   parent_email: string | null;
   communication_recipient: "student" | "parent" | "both" | null;
   preferred_communication: "wechat" | "email" | null;
-  notification_method: "wechat" | "email" | "phone" | null;
 };
 
 type RoleDetails = Record<string, unknown> & { uid: string };
@@ -53,7 +53,7 @@ export function ApproveNewUsersPage() {
       const [profilesResult, studentsResult, tutorsResult] = await Promise.all([
         supabase
           .from("profiles")
-          .select("uid, role, name, email, created_at, student_wechat_id, parent_wechat_id, student_email, parent_email, communication_recipient, preferred_communication, notification_method")
+          .select("uid, role, name, email, created_at, student_wechat_id, parent_wechat_id, student_email, parent_email, communication_recipient, preferred_communication")
           .in("role", ["student", "tutor"])
           .is("approved", null)
           .order("created_at", { ascending: true }),
@@ -96,6 +96,7 @@ export function ApproveNewUsersPage() {
       setSaving(false);
       return;
     }
+    void dispatchReminderEmails();
     setProfiles((current) => current.filter((profile) => profile.uid !== decision.profile.uid));
     setDecision(null);
     setSaving(false);
@@ -138,7 +139,6 @@ export function ApproveNewUsersPage() {
                   <div className="grid gap-1 py-3 sm:grid-cols-[10rem_1fr]"><dt className="text-xs text-muted-foreground">{t("admin.registeredAt")}</dt><dd className="text-card-foreground">{new Date(profile.created_at).toLocaleString(lang === "zh" ? "zh-CN" : "en-US", { dateStyle: "medium", timeStyle: "short" })}</dd></div>
                   <div className="grid gap-1 py-3 sm:grid-cols-[10rem_1fr]"><dt className="text-xs text-muted-foreground">{t("auth.communicationRecipient")}</dt><dd className="text-card-foreground">{recipientLabel(profile.communication_recipient, profile.role, t)}</dd></div>
                   <div className="grid gap-1 py-3 sm:grid-cols-[10rem_1fr]"><dt className="text-xs text-muted-foreground">{t("auth.preferredCommunication")}</dt><dd className="text-card-foreground">{profile.preferred_communication ? t(`auth.preferredCommunication.${profile.preferred_communication}` as TranslationKey) : "—"}</dd></div>
-                  <div className="grid gap-1 py-3 sm:grid-cols-[10rem_1fr]"><dt className="text-xs text-muted-foreground">{t("auth.notificationMethod")}</dt><dd className="text-card-foreground">{profile.notification_method ? t(`auth.notificationMethod.${profile.notification_method}` as TranslationKey) : "—"}</dd></div>
                   {profile.student_wechat_id && <div className="grid gap-1 py-3 sm:grid-cols-[10rem_1fr]"><dt className="text-xs text-muted-foreground">{t(profile.role === "tutor" ? "auth.tutorWechatId" : "auth.studentWechatId")}</dt><dd className="break-all text-card-foreground">{profile.student_wechat_id}</dd></div>}
                   {profile.parent_wechat_id && <div className="grid gap-1 py-3 sm:grid-cols-[10rem_1fr]"><dt className="text-xs text-muted-foreground">{t("auth.parentWechatId")}</dt><dd className="break-all text-card-foreground">{profile.parent_wechat_id}</dd></div>}
                   {profile.student_email && <div className="grid gap-1 py-3 sm:grid-cols-[10rem_1fr]"><dt className="text-xs text-muted-foreground">{t(profile.role === "tutor" ? "auth.tutorCommunicationEmail" : "auth.studentCommunicationEmail")}</dt><dd className="break-all text-card-foreground">{profile.student_email}</dd></div>}

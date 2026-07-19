@@ -30,6 +30,8 @@ type ContactEntry = {
   isPrimary: boolean;
 };
 
+const hiddenContactNames = new Set(["Tutor Test", "Student Test"]);
+
 function contactEntries(contact: Contact, mode: ContactMode): ContactEntry[] {
   const entries: ContactEntry[] = [];
   const studentValue = mode === "wechat" ? contact.student_wechat_id : contact.student_email;
@@ -127,7 +129,7 @@ export function CommunicationsPage({
       if (!cancelled) {
         setContacts(
           ((data ?? []) as Contact[])
-            .filter((contact) => allowedRoles.includes(contact.role))
+            .filter((contact) => allowedRoles.includes(contact.role) && !hiddenContactNames.has(contact.name))
             .sort((a, b) => a.role.localeCompare(b.role) || a.name.localeCompare(b.name)),
         );
         setSelectedKeys([]);
